@@ -24,28 +24,49 @@ export async function getRooms(propertyId) {
   return res.json();
 }
 
-export async function getPhotos(roomId) {
-  const res = await fetch(`${BASE_URL}/rooms/${roomId}/photos`);
+// ===== Inspections =====
+
+export async function getInspections(propertyId) {
+  const res = await fetch(`${BASE_URL}/properties/${propertyId}/inspections`);
   return res.json();
 }
 
-export async function uploadPhotos(roomId, files) {
+export async function createInspection(propertyId, type, inspectionDate, inheritFromPrevious) {
+  const res = await fetch(`${BASE_URL}/properties/${propertyId}/inspections`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type, inspectionDate, inheritFromPrevious }),
+  });
+  return res.json();
+}
+
+export async function getInspectionPhotos(inspectionId, roomId) {
+  const res = await fetch(`${BASE_URL}/inspections/${inspectionId}/rooms/${roomId}/photos`);
+  return res.json();
+}
+
+export async function uploadInspectionPhotos(inspectionId, roomId, files) {
   const formData = new FormData();
   for (const file of files) {
     formData.append('files', file);
   }
-  const res = await fetch(`${BASE_URL}/rooms/${roomId}/photos`, {
+  const res = await fetch(`${BASE_URL}/inspections/${inspectionId}/rooms/${roomId}/photos`, {
     method: 'POST',
     body: formData,
   });
   return res.json();
 }
 
-export async function deletePhotos(roomId, photoIds) {
-  const res = await fetch(`${BASE_URL}/rooms/${roomId}/photos`, {
+export async function deleteInspectionPhotos(inspectionId, photoIds) {
+  const res = await fetch(`${BASE_URL}/inspections/${inspectionId}/photos`, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ photoIds }),
+    body: JSON.stringify(photoIds),
   });
   return res;
 }
+
+
+
+
+

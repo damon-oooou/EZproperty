@@ -1,18 +1,22 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { getPhotos, uploadPhotos, deletePhotos } from '../api/client';
+import {
+  getInspectionPhotos,
+  uploadInspectionPhotos,
+  deleteInspectionPhotos,
+} from '../api/client';
 
 function RoomPage() {
-  const { roomId } = useParams();
+  const { propertyId, inspectionId, roomId } = useParams();
   const [photos, setPhotos] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
 
   useEffect(() => {
     loadPhotos();
-  }, [roomId]);
+  }, [inspectionId, roomId]);
 
   async function loadPhotos() {
-    const data = await getPhotos(roomId);
+    const data = await getInspectionPhotos(inspectionId, roomId);
     setPhotos(data);
   }
 
@@ -26,7 +30,7 @@ function RoomPage() {
 
   async function handleDelete() {
     if (selectedIds.length === 0) return;
-    await deletePhotos(roomId, selectedIds);
+    await deleteInspectionPhotos(inspectionId, selectedIds);
     setSelectedIds([]);
     loadPhotos();
   }
@@ -34,20 +38,23 @@ function RoomPage() {
   async function handleUpload(e) {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-    await uploadPhotos(roomId, files);
+    await uploadInspectionPhotos(inspectionId, roomId, files);
+    e.target.value = '';
     loadPhotos();
   }
 
   return (
     <div style={{ padding: '20px' }}>
-      <Link to="/">← Back to Properties</Link>
+      <Link to={`/properties/${propertyId}/inspections/${inspectionId}`}>
+        ← Back to Rooms
+      </Link>
 
       <h1>Room Photos</h1>
 
       <div style={{ marginBottom: '20px' }}>
         <input type="file" multiple accept="image/*" onChange={handleUpload} />
         <button onClick={handleDelete} disabled={selectedIds.length === 0}>
-          Delete Selected ({selectedIds.length})
+          Remove Selected ({selectedIds.length})
         </button>
       </div>
 
