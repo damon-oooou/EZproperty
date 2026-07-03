@@ -1,101 +1,114 @@
-# Property Photos
+# EZproperty
 
-A property management photo documentation system that solves a real pain point in real estate: **reusing condition-report photos across tenancies instead of re-photographing entire properties every time.**
+A cloud-based property inspection platform that enables property managers to build and maintain a **persistent photo history** for every property. Instead of recreating condition reports from scratch for each tenancy, managers reuse existing photos and update only what has changed.
 
 ## The Problem
 
-Property managers re-shoot a full condition report (200–400 photos per property) before every new tenancy, even though most rooms haven't changed since the last shoot. This wastes hours per property, every single time.
+Every time a tenancy ends and a new one begins, a property manager typically:
 
-## The Solution
+- Re-photographs the entire property — **200 to 400 photos** per property, depending on whether it is an apartment or a house
+- Repeats this even though most rooms haven't changed at all
+- Spends additional hours organising the photos and assembling a condition report
 
-Photos are stored per-room and persist across tenancies. Before the next tenant moves in, the property manager opens each room, deletes only the photos that are outdated, and imports new ones for what's changed. Everything else carries over automatically — no full re-shoot required.
+The photos taken at each inspection are treated as disposable, so the work is redone from zero every single cycle.
 
-## Tech Stack
+## The Core Idea
 
-**Backend**
-- Java 17, Spring Boot 3.4, Spring MVC
-- PostgreSQL + Spring Data JPA / Hibernate
-- Flyway (database migrations)
-- Local file storage for MVP (abstracted behind a service layer for a future S3 migration)
-- Docker + Docker Compose
+EZproperty treats a property's photos as a **long-term Photo Library** — an asset that is built once and maintained over time, not recreated per tenancy.
 
-**Frontend**
-- React (Vite)
-- React Router
+- **Photos belong to the property**, organised by a fixed room list (Entrance, Lounge Room, Kitchen, Bedrooms 1–3, Bathroom, Gardens, Garage, and so on)
+- **Inspections reference photos** rather than owning them. Each inspection (Entry / Routine / Exit, following Australian condition report conventions) holds a set of references into the library
+- **Creating a new inspection can inherit** all photos from the previous inspection — as an explicit, user-initiated choice, never automatically. The manager then re-photographs only the rooms that changed
+- **Removing a photo from an inspection removes only the reference.** The photo itself, and every historical inspection that used it, remains intact
 
-## How It Works
+This reference-based model means a photo taken once can serve many inspections, and the history of every past inspection is immutable.
 
-1. **Create a property** — automatically generates a fixed set of 18 rooms (Entrance, Lounge Room, Kitchen, Bedroom 1–3, Bathroom, Garage, etc.)
-2. **Upload photos** to any room
-3. **Before the next tenancy**, open a room, select outdated photos via checkbox, delete them, and import new ones — unaffected photos are left untouched
-4. Photo history is preserved per property across multiple tenancies, eliminating redundant reshoots
+## Current Status — v0.2
 
-## Project Structure
+Full-stack web MVP, working end to end:
 
-```
-property-photos/
-├── src/main/java/com/propertymap/
-│   ├── controller/      # REST endpoints (Property, Room, Photo)
-│   ├── service/         # Business logic
-│   ├── repository/      # Spring Data JPA repositories
-│   ├── model/            # JPA entities
-│   └── config/           # CORS + static resource (uploads) config
-├── src/main/resources/
-│   ├── application.yml
-│   └── db/migration/    # Flyway migrations (V1–V3)
-├── docker-compose.yml    # PostgreSQL container
-└── frontend/
-    ├── src/
-    │   ├── pages/         # PropertiesPage, PropertyDetailPage, RoomPage
-    │   └── api/client.js  # API layer
-    └── package.json
-```
+- Property and room management with the fixed room list
+- Inspection lifecycle: create Entry / Routine / Exit inspections with a date
+- Photo inheritance from the previous inspection via a single checkbox
+- Per-room photo upload and viewing within an inspection
+- Reference-only removal of photos from an inspection, preserving history
 
-## Database Schema
+## Architecture
+
+### Stack
+
+| Layer | Technology |
+|---|---|
+| Backend | Java 17, Spring Boot 3.4, Maven |
+| Database | PostgreSQL (Docker), Flyway migrations |
+| Frontend | React + Vite, react-router-dom |
+| Storage | Local filesystem (abstracted behind a storage layer for a future S3 migration) |
+
+### Data Model
 
 ```
-properties (1) ──< rooms (N) ──< photos (N)
+Property ──< Room ──< Photo            (the Photo Library)
+Property ──< Inspection ──< InspectionPhoto >── Photo   (references)
 ```
 
-- **properties**: address, type (HOUSE / APARTMENT)
-- **rooms**: 18 default rooms auto-created per property, ordered by position
-- **photos**: file metadata + local storage path, linked to a room
+- `inspection_photos` is a join table: an inspection "contains" a photo by holding a reference row, not a copy of the file
+- Inheritance is implemented as a batch copy of reference rows from the most recent prior inspection
+- Photo files are stored per room on disk, independent of any inspection — which is exactly what makes cross-inspection reuse free
 
-## API Overview
+### API Overview
 
-| Method | Endpoint | Description |
-|--------|----------|--------------|
-| GET | `/api/properties` | List all properties |
-| POST | `/api/properties` | Create a property (auto-creates 18 rooms) |
-| GET | `/api/properties/{id}/rooms` | List rooms for a property |
-| GET | `/api/rooms/{roomId}/photos` | List photos in a room |
-| POST | `/api/rooms/{roomId}/photos` | Upload photos to a room |
-| DELETE | `/api/rooms/{roomId}/photos` | Delete selected photos |
+```
+GET    /api/properties
+POST   /api/properties
+GET    /api/properties/{id}
+GET    /api/properties/{propertyId}/rooms
+GET    /api/properties/{propertyId}/inspections
+POST   /api/properties/{propertyId}/inspections        (type, date, inheritFromPrevious)
+GET    /api/inspections/{inspectionId}/rooms/{roomId}/photos
+POST   /api/inspections/{inspectionId}/rooms/{roomId}/photos   (multipart upload)
+DELETE /api/inspections/{inspectionId}/photos          (removes references only)
+```
 
-## Running Locally
+The API is designed to also serve a future iOS app for on-site photo capture.
 
-**Backend**
+## Getting Started
+
+### Prerequisites
+
+- Java 17
+- Node.js
+- Docker (for PostgreSQL)
+- Maven
+
+### Run the backend
+
 ```bash
-docker-compose up -d        # start PostgreSQL
-mvn spring-boot:run         # runs on :8080, Flyway migrates automatically
+# Start PostgreSQL
+docker compose up -d
+
+# Start Spring Boot (Flyway runs all migrations automatically on first start)
+mvn spring-boot:run
 ```
 
-**Frontend**
+Backend runs at `http://localhost:8080`.
+
+### Run the frontend
+
 ```bash
 cd frontend
 npm install
-npm run dev                 # runs on :5173
+npm run dev
 ```
 
-## Status
-
-MVP core flow is complete: create property → auto-generate rooms → upload/view/delete photos per room. Report generation and authentication are planned for a later phase.
+Frontend runs at `http://localhost:5173`.
 
 ## Roadmap
 
-- [ ] React page polish (upload progress, delete confirmation)
-- [ ] Editable room list (add/remove rooms per property)
-- [ ] Condition report generation (PDF export)
-- [ ] User authentication for multi-manager support
-- [ ] S3 migration for production storage
-- [ ] iOS app reusing the same Spring Boot API
+- **v0.3 candidates**
+  - Per-room photo counts in the inspection view (e.g. "Kitchen (12)") to show at a glance which rooms still need photos
+  - Response DTOs to decouple the API contract from JPA entities (prerequisite for the iOS app)
+  - Soft deletes and richer photo metadata, so the Photo Library is preserved as a true long-term asset
+- **Further out**
+  - iOS app for on-site photo capture, feeding the same backend API
+  - Condition report generation from an inspection's photo set
+  - Migration of photo storage from local filesystem to S3 (storage layer already abstracted for this)
