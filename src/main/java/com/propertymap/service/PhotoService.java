@@ -27,15 +27,13 @@ public class PhotoService {
     @Value("${file.upload-dir}")
     private String uploadDir;
 
-    public List<Photo> getPhotosByRoom(Long roomId) {
-        return photoRepository.findByRoomId(roomId);
+    public Room getRoomOrThrow(Long roomId) {
+        return roomRepository.findById(roomId)
+            .orElseThrow(() -> new RuntimeException("Room not found: " + roomId));
     }
 
-    public List<Photo> uploadPhotos(Long roomId, List<MultipartFile> files) throws IOException {
-        Room room = roomRepository.findById(roomId)
-            .orElseThrow(() -> new RuntimeException("Room not found: " + roomId));
-
-        Path uploadPath = Paths.get(uploadDir, String.valueOf(roomId));
+    public List<Photo> storePhotos(Room room, List<MultipartFile> files) throws IOException {
+        Path uploadPath = Paths.get(uploadDir, String.valueOf(room.getId()));
         Files.createDirectories(uploadPath);
 
         List<Photo> saved = new ArrayList<>();
@@ -52,20 +50,5 @@ public class PhotoService {
             saved.add(photoRepository.save(photo));
         }
         return saved;
-    }
-
-    public void deletePhoto(Long photoId) throws IOException {
-        Photo photo = photoRepository.findById(photoId)
-            .orElseThrow(() -> new RuntimeException("Photo not found: " + photoId));
-
-        Path filePath = Paths.get(photo.getFilePath());
-        Files.deleteIfExists(filePath);
-        photoRepository.delete(photo);
-    }
-
-    public void deletePhotos(List<Long> photoIds) throws IOException {
-        for (Long id : photoIds) {
-            deletePhoto(id);
-        }
     }
 }
