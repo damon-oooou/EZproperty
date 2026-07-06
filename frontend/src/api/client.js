@@ -24,6 +24,16 @@ export async function getRooms(propertyId) {
   return res.json();
 }
 
+// v0.4:添加自定义房间(房间是 property 级资产,会出现在该 property 的所有 inspection 中)
+export async function createRoom(propertyId, name) {
+  const res = await fetch(`${BASE_URL}/properties/${propertyId}/rooms`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  return res.json();
+}
+
 // ===== Inspections =====
 
 export async function getInspections(propertyId) {
@@ -71,7 +81,6 @@ export async function deleteInspectionPhotos(inspectionId, photoIds) {
   });
   return res;
 }
-
 
 
 
