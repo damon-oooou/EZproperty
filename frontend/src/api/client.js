@@ -40,6 +40,12 @@ export async function createInspection(propertyId, type, inspectionDate, inherit
   return res.json();
 }
 
+// v0.3:inspection 语境的房间列表,每间带本次 inspection 的照片数
+export async function getInspectionRooms(inspectionId) {
+  const res = await fetch(`${BASE_URL}/inspections/${inspectionId}/rooms`);
+  return res.json();
+}
+
 export async function getInspectionPhotos(inspectionId, roomId) {
   const res = await fetch(`${BASE_URL}/inspections/${inspectionId}/rooms/${roomId}/photos`);
   return res.json();

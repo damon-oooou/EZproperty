@@ -1,14 +1,15 @@
 package com.propertymap.model;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
-import lombok.Data;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 import java.time.LocalDateTime;
 import java.util.List;
 
-@Data
 @Entity
 @Table(name = "rooms")
+@Getter @Setter @NoArgsConstructor
 public class Room {
 
     @Id
@@ -17,8 +18,7 @@ public class Room {
 
     @ManyToOne
     @JoinColumn(name = "property_id", nullable = false)
-    @JsonIgnore
-    private Property property;
+    private Property property; 
 
     @Column(nullable = false)
     private String name;

@@ -1,6 +1,6 @@
 package com.propertymap.controller;
 
-import com.propertymap.model.Room;
+import com.propertymap.controller.dto.RoomResponse;
 import com.propertymap.service.RoomService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -17,14 +17,15 @@ public class RoomController {
     private final RoomService roomService;
 
     @GetMapping
-    public ResponseEntity<List<Room>> getRooms(@PathVariable Long propertyId) {
-        return ResponseEntity.ok(roomService.getRoomsByProperty(propertyId));
+    public ResponseEntity<List<RoomResponse>> getRooms(@PathVariable Long propertyId) {
+        return ResponseEntity.ok(roomService.getRoomsByProperty(propertyId)
+                .stream().map(RoomResponse::from).toList());
     }
 
     @PostMapping
-    public ResponseEntity<Room> addRoom(
+    public ResponseEntity<RoomResponse> addRoom(
             @PathVariable Long propertyId,
             @RequestBody Map<String, String> body) {
-        return ResponseEntity.ok(roomService.addRoom(propertyId, body.get("name")));
+        return ResponseEntity.ok(RoomResponse.from(roomService.addRoom(propertyId, body.get("name"))));
     }
 }

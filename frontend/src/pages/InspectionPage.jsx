@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { getRooms, getInspections } from '../api/client';
+import { getInspectionRooms, getInspections } from '../api/client';
 
 function InspectionPage() {
   const { propertyId, inspectionId } = useParams();
@@ -12,7 +12,8 @@ function InspectionPage() {
   }, [propertyId, inspectionId]);
 
   async function loadData() {
-    const roomsData = await getRooms(propertyId);
+    // v0.3:房间列表改从 inspection 语境获取,每间自带本次 inspection 的照片数
+    const roomsData = await getInspectionRooms(inspectionId);
     const inspectionsData = await getInspections(propertyId);
     setRooms(roomsData);
     setInspection(
@@ -34,7 +35,7 @@ function InspectionPage() {
             <Link
               to={`/properties/${propertyId}/inspections/${inspectionId}/rooms/${room.id}`}
             >
-              {room.name}
+              {room.name} ({room.photoCount})
             </Link>
           </li>
         ))}

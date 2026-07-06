@@ -62,7 +62,7 @@ function RoomPage() {
         {photos.map((photo) => (
           <div key={photo.id} style={{ border: '1px solid #ccc', padding: '5px' }}>
             <img
-              src={`http://localhost:8080/uploads/${roomId}/${photo.filePath.split('\\').pop()}`}
+              src={`http://localhost:8080${photo.url}`}
               alt={photo.fileName}
               style={{ width: '150px', height: '150px', objectFit: 'cover' }}
             />

@@ -1,5 +1,6 @@
 package com.propertymap.service;
 
+import com.propertymap.controller.dto.RoomWithPhotoCountResponse;  
 import com.propertymap.model.*;
 import com.propertymap.repository.*;
 import jakarta.persistence.EntityNotFoundException;
@@ -8,10 +9,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;                                              
 import java.util.Optional;
-import java.io.IOException;
+import java.util.stream.Collectors;                                
 
 @Service
 @RequiredArgsConstructor
@@ -21,6 +24,7 @@ public class InspectionService {
     private final InspectionPhotoRepository inspectionPhotoRepository;
     private final PropertyRepository propertyRepository;
     private final PhotoService photoService;
+    private final RoomRepository roomRepository;   
 
     @Transactional
     public Inspection createInspection(Long propertyId, InspectionType type,
@@ -92,5 +96,34 @@ public class InspectionService {
         link.setInspection(inspection);
         link.setPhoto(photo);
         inspectionPhotoRepository.save(link);
+    }
+
+
+    /**
+     * 分层说明:本项目的惯例是 service 返回实体、controller 转 DTO。
+     * 唯独这个方法直接返回 DTO,因为它要把两份数据(房间 + 统计)合并成一个形状,
+     * 这个"合并"本身就是业务逻辑,放 controller 里不合适。
+     *
+     * @Transactional(readOnly = true) 是必需的:inspection.getProperty() 是 LAZY 关联,
+     * 必须在事务内访问,否则抛 LazyInitializationException。
+     */
+    @Transactional(readOnly = true)
+    public List<RoomWithPhotoCountResponse> getRoomsWithPhotoCounts(Long inspectionId) {
+        Inspection inspection = inspectionRepository.findById(inspectionId)
+                .orElseThrow(() -> new EntityNotFoundException("Inspection not found: " + inspectionId));
+
+        List<Room> rooms = roomRepository.findByPropertyIdOrderByPosition(
+                inspection.getProperty().getId());
+
+        Map<Long, Long> counts = inspectionPhotoRepository
+                .countPhotosByRoomForInspection(inspectionId)
+                .stream()
+                .collect(Collectors.toMap(RoomPhotoCount::roomId, RoomPhotoCount::count));
+
+        return rooms.stream()
+                .map(r -> new RoomWithPhotoCountResponse(
+                        r.getId(), r.getName(), r.getPosition(),
+                        counts.getOrDefault(r.getId(), 0L)))
+                .toList();
     }
 }

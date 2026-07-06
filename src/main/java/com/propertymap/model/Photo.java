@@ -1,13 +1,14 @@
 package com.propertymap.model;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
-import lombok.Data;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 import java.time.LocalDateTime;
 
-@Data
 @Entity
 @Table(name = "photos")
+@Getter @Setter @NoArgsConstructor
 public class Photo {
 
     @Id
@@ -16,7 +17,6 @@ public class Photo {
 
     @ManyToOne
     @JoinColumn(name = "room_id", nullable = false)
-    @JsonIgnore
     private Room room;
 
     @Column(name = "file_name", nullable = false)
