@@ -16,24 +16,31 @@ The photos taken at each inspection are treated as disposable, so the work is re
 
 EZproperty treats a property's photos as a long-term **Photo Library** — an asset that is built once and maintained over time, not recreated per tenancy.
 
-- Photos belong to the property, organised by a fixed room list (Entrance, Lounge Room, Kitchen, Bedrooms 1–3, Bathroom, Gardens, Garage, and so on)
+- Photos belong to the property, organised by a fixed room list (Entrance, Lounge Room, Kitchen, Bedrooms 1–3, Bathroom, Gardens, Garage, and so on), with custom rooms added per property when needed (e.g. "Bedroom 4")
 - Inspections **reference** photos rather than owning them. Each inspection (Entry / Routine / Exit, following Australian condition report conventions) holds a set of references into the library
 - Creating a new inspection can inherit all photos from the previous inspection — as an explicit, user-initiated choice, never automatically. The manager then re-photographs only the rooms that changed
 - Removing a photo from an inspection removes only the reference. The photo itself, and every historical inspection that used it, remains intact
 
 This reference-based model means a photo taken once can serve many inspections, and the history of every past inspection is immutable.
 
-## Current Status — v0.3
+## Current Status — v0.4
 
 Full-stack web MVP, working end to end:
 
-- Property and room management with the fixed room list
+- Property and room management with the fixed room list, plus per-property custom rooms
 - Inspection lifecycle: create Entry / Routine / Exit inspections with a date
-- Photo inheritance from the previous inspection via a single checkbox
+- Photo inheritance from the previous inspection via a single checkbox (disabled when there is nothing to inherit)
 - Per-room photo upload and viewing within an inspection
 - Reference-only removal of photos from an inspection, preserving history
-- **Per-room photo counts** in the inspection view — e.g. "Kitchen (12)" — showing at a glance which rooms still need photos
-- **Response DTOs across the entire API**, decoupling the public contract from JPA entities (a prerequisite for the iOS app: entity and database refactors no longer ripple into the JSON that clients depend on)
+- Per-room photo counts computed server-side, so coverage is visible at a glance
+- Response DTOs across the entire API, decoupling the public contract from JPA entities (a prerequisite for the iOS app)
+
+The v0.4 interface (React + Tailwind CSS):
+
+- **Google-style home page**: a single centered search box with instant autocomplete — filter by any address fragment, keyboard navigation, and a create-from-search flow when nothing matches — plus an Add Property modal
+- **Unified app shell**: top bar and breadcrumb navigation on every page
+- **Room coverage grid**: each inspection shows all rooms as tiles — photographed rooms carry a count badge, empty rooms are visually flagged — with an "X of N rooms photographed" summary and an inline "Add room" tile
+- **Photo grid with lightbox**: click any photo to view full size (keyboard navigation), select photos in place to remove them from the inspection
 
 ## Architecture
 
@@ -43,7 +50,7 @@ Full-stack web MVP, working end to end:
 | --- | --- |
 | Backend | Java 17, Spring Boot 3.4, Maven |
 | Database | PostgreSQL (Docker), Flyway migrations |
-| Frontend | React + Vite, react-router-dom |
+| Frontend | React + Vite, React Router, Tailwind CSS v4 |
 | Storage | Local filesystem (abstracted behind a storage layer for a future S3 migration) |
 
 ### Data Model
@@ -62,7 +69,7 @@ Property ──< Inspection ──< InspectionPhoto >── Photo   (references)
 All endpoints return **response DTOs**, never JPA entities. Two consequences worth noting:
 
 - Photo responses expose a ready-to-use `url` field instead of internal file paths; storage layout is a backend-only concern
-- Per-room photo counts are computed server-side in a single `GROUP BY` query (no N+1), merged with the property's fixed room list so every room always appears, zero-count or not
+- Per-room photo counts are computed server-side in a single `GROUP BY` query (no N+1), merged with the property's full room list so every room always appears, zero-count or not
 
 ```
 GET    /api/properties
@@ -72,7 +79,7 @@ GET    /api/properties/{propertyId}/rooms
 POST   /api/properties/{propertyId}/rooms
 GET    /api/properties/{propertyId}/inspections
 POST   /api/properties/{propertyId}/inspections        (type, date, inheritFromPrevious)
-GET    /api/inspections/{inspectionId}/rooms           (fixed room list + per-room photo count)
+GET    /api/inspections/{inspectionId}/rooms           (full room list + per-room photo count)
 GET    /api/inspections/{inspectionId}/rooms/{roomId}/photos
 POST   /api/inspections/{inspectionId}/rooms/{roomId}/photos   (multipart upload)
 DELETE /api/inspections/{inspectionId}/photos          (removes references only)
@@ -113,15 +120,15 @@ Frontend runs at `http://localhost:5173`.
 
 ## Roadmap
 
-### v0.4 candidates
+### v0.5 candidates
 
 - Soft deletes and richer photo metadata, so the Photo Library is preserved as a true long-term asset
-- UX polish of the inspection and room views
+- Condition report data model: per-room condition items and comments, the groundwork for report generation
 
 ### Further out
 
+- Condition report generation (PDF) — one default template following Victorian conventions first, per-agency templates as configuration later
 - iOS app for on-site photo capture, feeding the same backend API
-- Condition report generation (PDF) from an inspection's photo set
 - Authentication and multi-user support
 - Migration of photo storage from local filesystem to S3 (storage layer already abstracted for this)
 - AI-assisted features (e.g. change detection between inspections, report drafting)
