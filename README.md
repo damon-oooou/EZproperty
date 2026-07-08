@@ -14,121 +14,94 @@ The photos taken at each inspection are treated as disposable, so the work is re
 
 ## The Core Idea
 
-EZproperty treats a property's photos as a long-term **Photo Library** — an asset that is built once and maintained over time, not recreated per tenancy.
+EZproperty maintains a long-lived **Property Photo Library**. Photos belong to the property (via its rooms — a fixed room list per property, with custom rooms added when needed). Inspections are time-stamped slices that *reference* photos through a join table:
 
-- Photos belong to the property, organised by a fixed room list (Entrance, Lounge Room, Kitchen, Bedrooms 1–3, Bathroom, Gardens, Garage, and so on), with custom rooms added per property when needed (e.g. "Bedroom 4")
-- Inspections **reference** photos rather than owning them. Each inspection (Entry / Routine / Exit, following Australian condition report conventions) holds a set of references into the library
-- Creating a new inspection can inherit all photos from the previous inspection — as an explicit, user-initiated choice, never automatically. The manager then re-photographs only the rooms that changed
-- Removing a photo from an inspection removes only the reference. The photo itself, and every historical inspection that used it, remains intact
+- Creating a new inspection can **inherit** the previous inspection's photos by copying join-table rows — not files, not records
+- The manager then re-photographs only the rooms that changed
+- Removing a photo from an inspection deletes only the reference; the file and its history remain intact for past inspections
+- The same inheritance applies to report content: room conditions and tenancy details carry over, while per-visit findings (urgent actions, comments) start blank
 
-This reference-based model means a photo taken once can serve many inspections, and the history of every past inspection is immutable.
+## Current Status — v0.4.2
 
-## Current Status — v0.4
+**Property & inspection management**
+- Google-style home page with instant autocomplete search and create-property flow
+- Property page with inspection list (ENTRY / ROUTINE / EXIT), inherit-from-previous option
+- Inspection page with Photos / Report tabs (tab state persisted in the URL)
 
-Full-stack web MVP, working end to end:
+**Photo library**
+- Room coverage grid per inspection (photo counts, amber flags for unphotographed rooms)
+- Per-room photo upload, lightbox viewing, reference-based removal
+- Custom rooms added inline (property-level assets, visible across all inspections)
 
-- Property and room management with the fixed room list, plus per-property custom rooms
-- Inspection lifecycle: create Entry / Routine / Exit inspections with a date
-- Photo inheritance from the previous inspection via a single checkbox (disabled when there is nothing to inherit)
-- Per-room photo upload and viewing within an inspection
-- Reference-only removal of photos from an inspection, preserving history
-- Per-room photo counts computed server-side, so coverage is visible at a glance
-- Response DTOs across the entire API, decoupling the public contract from JPA entities (a prerequisite for the iOS app)
+**Condition report (NSW routine format)**
+- Room-level conditions: Satisfactory / Not satisfactory / Not inspected + comments, with a one-click "All satisfactory" shortcut
+- Report details: landlord, tenant, lease expiry, smoke alarms, tenant repairs, urgent action / general comments / tenant action boxes, agency info, editable disclaimer
+- Full inheritance: conditions and identity fields copy to the next inspection; per-visit action boxes intentionally start blank
 
-The v0.4 interface (React + Tailwind CSS):
+**PDF generation**
+- `GET /api/inspections/{id}/report` renders a downloadable A4 PDF (Thymeleaf template → openhtmltopdf)
+- Three sections: report header, room condition table, photos grouped by room (two-column grid, auto-captioned)
+- Photos downscaled to 1200px and embedded; page numbering in the footer
+- Own template and wording throughout — no reproduction of copyrighted industry forms; the agent disclaimer is a user-editable field
 
-- **Google-style home page**: a single centered search box with instant autocomplete — filter by any address fragment, keyboard navigation, and a create-from-search flow when nothing matches — plus an Add Property modal
-- **Unified app shell**: top bar and breadcrumb navigation on every page
-- **Room coverage grid**: each inspection shows all rooms as tiles — photographed rooms carry a count badge, empty rooms are visually flagged — with an "X of N rooms photographed" summary and an inline "Add room" tile
-- **Photo grid with lightbox**: click any photo to view full size (keyboard navigation), select photos in place to remove them from the inspection
+## Tech Stack
 
-## Architecture
+| Layer      | Technology |
+|------------|------------|
+| Backend    | Java 17, Spring Boot 3.4, Spring MVC, JPA/Hibernate |
+| Database   | PostgreSQL (Docker Compose), Flyway migrations |
+| PDF        | Thymeleaf, openhtmltopdf (io.github.openhtmltopdf fork) |
+| Frontend   | React, Vite, React Router, Tailwind CSS v4 |
+| Storage    | Local filesystem behind a service layer (S3-compatible migration path preserved) |
 
-### Stack
-
-| Layer | Technology |
-| --- | --- |
-| Backend | Java 17, Spring Boot 3.4, Maven |
-| Database | PostgreSQL (Docker), Flyway migrations |
-| Frontend | React + Vite, React Router, Tailwind CSS v4 |
-| Storage | Local filesystem (abstracted behind a storage layer for a future S3 migration) |
-
-### Data Model
-
-```
-Property ──< Room ──< Photo            (the Photo Library)
-Property ──< Inspection ──< InspectionPhoto >── Photo   (references)
-```
-
-- `inspection_photos` is a join table: an inspection "contains" a photo by holding a reference row, not a copy of the file
-- Inheritance is implemented as a batch copy of reference rows from the most recent prior inspection
-- Photo files are stored per room on disk, independent of any inspection — which is exactly what makes cross-inspection reuse free
-
-### API Contract
-
-All endpoints return **response DTOs**, never JPA entities. Two consequences worth noting:
-
-- Photo responses expose a ready-to-use `url` field instead of internal file paths; storage layout is a backend-only concern
-- Per-room photo counts are computed server-side in a single `GROUP BY` query (no N+1), merged with the property's full room list so every room always appears, zero-count or not
+## API Overview
 
 ```
-GET    /api/properties
-POST   /api/properties
-GET    /api/properties/{id}
-GET    /api/properties/{propertyId}/rooms
-POST   /api/properties/{propertyId}/rooms
-GET    /api/properties/{propertyId}/inspections
-POST   /api/properties/{propertyId}/inspections        (type, date, inheritFromPrevious)
-GET    /api/inspections/{inspectionId}/rooms           (full room list + per-room photo count)
-GET    /api/inspections/{inspectionId}/rooms/{roomId}/photos
-POST   /api/inspections/{inspectionId}/rooms/{roomId}/photos   (multipart upload)
-DELETE /api/inspections/{inspectionId}/photos          (removes references only)
+Properties
+  GET/POST  /api/properties
+  GET       /api/properties/{id}
+  GET/POST  /api/properties/{propertyId}/rooms
+  GET/POST  /api/properties/{propertyId}/inspections
+
+Inspections
+  GET       /api/inspections/{id}/rooms                     rooms + per-inspection photo counts
+  GET/POST  /api/inspections/{id}/rooms/{roomId}/photos
+  DELETE    /api/inspections/{id}/photos                    removes references only
+
+Reports (v0.4.1+)
+  GET/PUT   /api/inspections/{id}/conditions                room conditions, batch upsert
+  GET/PUT   /api/inspections/{id}/report-details
+  GET       /api/inspections/{id}/report                    PDF download (v0.4.2)
 ```
 
-The API is designed to also serve a future iOS app for on-site photo capture.
+## Data Model (Flyway V1–V7)
 
-## Getting Started
-
-### Prerequisites
-
-- Java 17
-- Node.js
-- Docker (for PostgreSQL)
-- Maven
-
-### Run the backend
-
-```bash
-# Start PostgreSQL
-docker compose up -d
-
-# Start Spring Boot (Flyway runs all migrations automatically on first start)
-mvn spring-boot:run
+```
+properties ─< rooms ─< photos
+properties ─< inspections ─< inspection_photos >─ photos   (reference join, RESTRICT on photo)
+inspections ─< room_conditions                              (unique per inspection+room)
+inspections ─1 report_details                               (PK = inspection id)
 ```
 
-Backend runs at `http://localhost:8080`.
+## Version History
 
-### Run the frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Frontend runs at `http://localhost:5173`.
+- **v0.1** — Core flow: properties, rooms, photo upload/storage
+- **v0.2** — Inspection layer: ENTRY/ROUTINE/EXIT, photo library with reference-based inheritance, new navigation flow
+- **v0.3** — Response DTO layer across the API, per-room photo counts, inspection-scoped room endpoint
+- **v0.4** — UI overhaul: Tailwind v4, Google-style home with autocomplete, room coverage grid, photo lightbox, custom rooms
+- **v0.4.1** — NSW condition report: data model (`room_conditions`, `report_details`), report editor with tri-state conditions and All-satisfactory shortcut, inheritance extended to report content
+- **v0.4.2** — PDF report generation (Thymeleaf + openhtmltopdf) with embedded photos and Download PDF button
 
 ## Roadmap
 
-### v0.5 candidates
+**v0.5 — Multi-user & authentication**
+- Tenant model decision (agency vs. individual PM ownership), data-ownership migration, Spring Security + JWT (shared by web and the future iOS app)
 
-- Soft deletes and richer photo metadata, so the Photo Library is preserved as a true long-term asset
-- Condition report data model: per-room condition items and comments, the groundwork for report generation
-
-### Further out
-
-- Condition report generation (PDF) — one default template following Victorian conventions first, per-agency templates as configuration later
-- iOS app for on-site photo capture, feeding the same backend API
-- Authentication and multi-user support
-- Migration of photo storage from local filesystem to S3 (storage layer already abstracted for this)
-- AI-assisted features (e.g. change detection between inspections, report drafting)
+**Later**
+- Photo ingest normalisation at upload time: EXIF orientation fix, unified JPEG re-encode, thumbnail generation (also the answer to egress costs — thumbnails for browsing, originals on demand, PDFs generated in-region)
+- Upload format validation (frontend `accept` + backend content-type checks) — scheduled alongside the iOS app, whose camera/export pipeline is fixed to JPEG (`AVCapturePhotoOutput`, quality prioritisation, original resolution); server-side HEIC decoding deliberately not planned
+- iOS app v1: native camera + PHPicker batch import; v2: in-app guided capture per room
+- Per-agency report template customisation; Victorian (CAV) item-level template
+- Soft deletes; embedded PDF font for non-Latin comment text
+- Cloud storage selection notes: zero-egress providers (e.g. R2/B2) favoured; storage abstraction already in place
+- AI-assisted features (change detection, report drafting) — further out
