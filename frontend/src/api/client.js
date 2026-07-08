@@ -82,6 +82,40 @@ export async function deleteInspectionPhotos(inspectionId, photoIds) {
   return res;
 }
 
+// ===== v0.5: Condition report =====
 
+// 全房间列表 + 已填的 condition,未填的 satisfactory/comments 为 null(服务端合并)
+export async function getConditions(inspectionId) {
+  const res = await fetch(`${BASE_URL}/inspections/${inspectionId}/conditions`);
+  return res.json();
+}
 
+// updates: [{ roomId, satisfactory, comments }],批量 upsert,返回合并后的最新状态
+export async function updateConditions(inspectionId, updates) {
+  const res = await fetch(`${BASE_URL}/inspections/${inspectionId}/conditions`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  return res.json();
+}
 
+// 没填过时返回全 null 的空壳(不是 404),表单可以直接渲染
+export async function getReportDetails(inspectionId) {
+  const res = await fetch(`${BASE_URL}/inspections/${inspectionId}/report-details`);
+  return res.json();
+}
+
+export async function updateReportDetails(inspectionId, details) {
+  const res = await fetch(`${BASE_URL}/inspections/${inspectionId}/report-details`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(details),
+  });
+  return res.json();
+}
+
+// v0.5:PDF 报告下载地址(直接用 <a href> 触发浏览器下载,不走 fetch)
+export function getReportPdfUrl(inspectionId) {
+  return `${BASE_URL}/inspections/${inspectionId}/report`;
+}

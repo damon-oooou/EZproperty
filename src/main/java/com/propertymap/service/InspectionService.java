@@ -1,6 +1,6 @@
 package com.propertymap.service;
 
-import com.propertymap.controller.dto.RoomWithPhotoCountResponse;  
+import com.propertymap.controller.dto.RoomWithPhotoCountResponse;
 import com.propertymap.model.*;
 import com.propertymap.repository.*;
 import jakarta.persistence.EntityNotFoundException;
@@ -12,9 +12,9 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.time.LocalDate;
 import java.util.List;
-import java.util.Map;                                              
+import java.util.Map;
 import java.util.Optional;
-import java.util.stream.Collectors;                                
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -24,7 +24,9 @@ public class InspectionService {
     private final InspectionPhotoRepository inspectionPhotoRepository;
     private final PropertyRepository propertyRepository;
     private final PhotoService photoService;
-    private final RoomRepository roomRepository;   
+    private final RoomRepository roomRepository;
+    private final RoomConditionRepository roomConditionRepository;
+    private final ReportDetailsRepository reportDetailsRepository;
 
     @Transactional
     public Inspection createInspection(Long propertyId, InspectionType type,
@@ -43,8 +45,11 @@ public class InspectionService {
         Inspection saved = inspectionRepository.save(inspection);
 
         if (inheritFromPrevious && previous.isPresent()) {
+            Long previousId = previous.get().getId();
+
+            // 1. 照片引用(v0.2 的原有逻辑)
             List<InspectionPhoto> inheritedLinks =
-                    inspectionPhotoRepository.findByInspectionId(previous.get().getId())
+                    inspectionPhotoRepository.findByInspectionId(previousId)
                             .stream()
                             .map(link -> {
                                 InspectionPhoto copy = new InspectionPhoto();
@@ -54,6 +59,37 @@ public class InspectionService {
                             })
                             .toList();
             inspectionPhotoRepository.saveAll(inheritedLinks);
+
+            // 2. 房间 condition(satisfactory + comments 全量拷贝)
+            List<RoomCondition> inheritedConditions =
+                    roomConditionRepository.findByInspectionIdWithRoom(previousId)
+                            .stream()
+                            .map(prev -> {
+                                RoomCondition copy = new RoomCondition();
+                                copy.setInspection(saved);
+                                copy.setRoom(prev.getRoom());
+                                copy.setSatisfactory(prev.getSatisfactory());
+                                copy.setComments(prev.getComments());
+                                return copy;
+                            })
+                            .toList();
+            roomConditionRepository.saveAll(inheritedConditions);
+
+            // 3. 报告头:身份类字段拷贝,三个行动框留空(每次检查的新发现,不该抄上次的)
+            reportDetailsRepository.findById(previousId).ifPresent(prev -> {
+                ReportDetails copy = new ReportDetails();
+                copy.setInspection(saved);
+                copy.setLandlordName(prev.getLandlordName());
+                copy.setTenantName(prev.getTenantName());
+                copy.setLeaseExpiry(prev.getLeaseExpiry());
+                copy.setSmokeAlarmsPresent(prev.getSmokeAlarmsPresent());
+                copy.setSmokeAlarmsLocation(prev.getSmokeAlarmsLocation());
+                copy.setAgentName(prev.getAgentName());
+                copy.setAgentTradingAs(prev.getAgentTradingAs());
+                copy.setDisclaimer(prev.getDisclaimer());
+                // urgentAction / generalComments / tenantActionRequired / tenantRepairsCarriedOut 有意留空
+                reportDetailsRepository.save(copy);
+            });
         }
         return saved;
     }
@@ -97,7 +133,6 @@ public class InspectionService {
         link.setPhoto(photo);
         inspectionPhotoRepository.save(link);
     }
-
 
     /**
      * 分层说明:本项目的惯例是 service 返回实体、controller 转 DTO。

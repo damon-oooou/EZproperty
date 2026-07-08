@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8"/>
+    <title th:text="${title}">Inspection Report</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 18mm 15mm 22mm 15mm;
+            @bottom-left {
+                content: "Generated with EZproperty";
+                font-size: 8px; color: #999;
+            }
+            @bottom-right {
+                content: "Page " counter(page) " of " counter(pages);
+                font-size: 8px; color: #999;
+            }
+        }
+        body { font-family: Helvetica, Arial, sans-serif; font-size: 10.5px; color: #1a1a1a; }
+
+        .report-title { font-size: 22px; font-weight: bold; letter-spacing: 0.5px;
+                        border-bottom: 3px solid #1a1a1a; padding-bottom: 6px; margin-bottom: 14px; }
+
+        table.info { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+        table.info td { border: 1px solid #bbb; padding: 5px 8px; vertical-align: top; }
+        table.info td.lbl { width: 22%; background: #f2f2f2; font-weight: bold; }
+
+        .box-label { font-weight: bold; margin: 10px 0 3px 0; }
+        .box { border: 1px solid #bbb; padding: 6px 8px; min-height: 34px;
+               white-space: pre-wrap; }
+
+        .section-title { font-size: 14px; font-weight: bold; margin: 0 0 8px 0;
+                         border-bottom: 2px solid #1a1a1a; padding-bottom: 4px; }
+        .page-section { page-break-before: always; }
+
+        table.cond { width: 100%; border-collapse: collapse; }
+        table.cond th, table.cond td { border: 1px solid #bbb; padding: 4px 8px; text-align: left; }
+        table.cond th { background: #f2f2f2; }
+        table.cond td.state { width: 18%; }
+        table.cond td.bad { color: #b45309; font-weight: bold; }
+        table.cond td.none { color: #999; }
+
+        .room-photos { margin-bottom: 6px; }
+        .room-photos h3 { font-size: 12px; margin: 10px 0 6px 0; }
+        .photo-cell { display: inline-block; width: 47%; vertical-align: top;
+                      margin: 0 2% 10px 0; page-break-inside: avoid; }
+        .photo-cell img { width: 100%; border: 1px solid #ccc; }
+        .photo-caption { font-size: 9px; color: #444; margin-top: 2px; }
+
+        .sig-row { margin-top: 26px; width: 100%; }
+        .sig-line { display: inline-block; width: 55%; border-top: 1px solid #1a1a1a;
+                    padding-top: 3px; font-size: 9px; color: #444; }
+        .sig-date { display: inline-block; width: 30%; border-top: 1px solid #1a1a1a;
+                    padding-top: 3px; font-size: 9px; color: #444; margin-left: 8%; }
+    </style>
+</head>
+<body>
+
+    <!-- ============ 第一部分:报告头 ============ -->
+    <div class="report-title" th:text="${title}">Routine Inspection Report</div>
+
+    <table class="info">
+        <tr>
+            <td class="lbl">Property</td>
+            <td colspan="3" th:text="${address}"></td>
+        </tr>
+        <tr>
+            <td class="lbl">Landlord</td>
+            <td th:text="${landlordName}"></td>
+            <td class="lbl">Tenant</td>
+            <td th:text="${tenantName}"></td>
+        </tr>
+        <tr>
+            <td class="lbl">Date of inspection</td>
+            <td th:text="${inspectionDate}"></td>
+            <td class="lbl">Lease expiry</td>
+            <td th:text="${leaseExpiry}"></td>
+        </tr>
+        <tr>
+            <td class="lbl">Smoke alarms present</td>
+            <td th:text="${smokeAlarmsPresent}"></td>
+            <td class="lbl">Location</td>
+            <td th:text="${smokeAlarmsLocation}"></td>
+        </tr>
+        <tr>
+            <td class="lbl">Tenant carried out repairs</td>
+            <td colspan="3" th:text="${tenantRepairs}"></td>
+        </tr>
+    </table>
+
+    <div class="box-label">Urgent action / maintenance</div>
+    <div class="box" th:text="${urgentAction}"></div>
+
+    <div class="box-label">General comments / maintenance</div>
+    <div class="box" th:text="${generalComments}"></div>
+
+    <div class="box-label">Tenant action required</div>
+    <div class="box" th:text="${tenantActionRequired}"></div>
+
+    <div class="box-label">Agent disclaimer</div>
+    <div class="box" th:text="${disclaimer}"></div>
+
+    <table class="info" style="margin-top: 12px;">
+        <tr>
+            <td class="lbl">Agent</td>
+            <td th:text="${agentName}"></td>
+            <td class="lbl">Trading as</td>
+            <td th:text="${agentTradingAs}"></td>
+        </tr>
+    </table>
+
+    <div class="sig-row">
+        <span class="sig-line">Agent signature</span>
+        <span class="sig-date">Date</span>
+    </div>
+
+    <!-- ============ 第二部分:房间状态表 ============ -->
+    <div class="page-section">
+        <div class="section-title">Room conditions</div>
+        <table class="cond">
+            <thead>
+                <tr><th>Room</th><th>Condition</th><th>Comments</th></tr>
+            </thead>
+            <tbody>
+                <tr th:each="r : ${rows}">
+                    <td th:text="${r.roomName}"></td>
+                    <td class="state"
+                        th:text="${r.condition}"
+                        th:classappend="${r.condition == 'Not satisfactory'} ? 'bad' : (${r.condition == 'Not inspected'} ? 'none' : '')"></td>
+                    <td th:text="${r.comments}"></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- ============ 第三部分:照片,按房间分组 ============ -->
+    <div class="page-section" th:if="${!roomPhotos.isEmpty()}">
+        <div class="section-title">Photos</div>
+        <div class="room-photos" th:each="rp : ${roomPhotos}">
+            <h3 th:text="${rp.roomName}"></h3>
+            <div>
+                <div class="photo-cell" th:each="p : ${rp.photos}">
+                    <img th:src="${p.dataUri}"/>
+                    <div class="photo-caption" th:text="${p.caption}"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
