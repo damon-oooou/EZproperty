@@ -20,6 +20,16 @@ function PropertyDetailPage() {
     loadData();
   }, [propertyId]);
 
+  // 继承来源 = 最近一次非 ROUTINE 的 inspection(列表由后端按日期倒序返回,find 即最近)。
+  // ROUTINE 不参与继承,创建 ROUTINE 时整个继承选项隐藏(与后端规则一致)。
+  const inheritSource = inspections.find((i) => i.type !== 'ROUTINE');
+
+  // 默认勾选规则:ENTRY/EXIT 有来源时默认勾选;ROUTINE 恒为 false(选项已隐藏)。
+  // 切换类型或列表刷新时重置为默认值。
+  useEffect(() => {
+    setInherit(type !== 'ROUTINE' && Boolean(inheritSource));
+  }, [type, inspections]);
+
   async function loadData() {
     const [propertyData, inspectionsData] = await Promise.all([
       getProperty(propertyId),
@@ -34,8 +44,7 @@ function PropertyDetailPage() {
     setCreating(true);
     try {
       await createInspection(propertyId, type, inspectionDate, inherit);
-      setInherit(false);
-      await loadData();
+      await loadData(); // 列表刷新后,上面的 effect 会把 inherit 重置为默认值
     } finally {
       setCreating(false);
     }
@@ -49,7 +58,10 @@ function PropertyDetailPage() {
     );
   }
 
-  const hasPrevious = inspections.length > 0;
+  // "Entry" / "Exit" 的展示格式
+  const sourceLabel = inheritSource
+    ? inheritSource.type.charAt(0) + inheritSource.type.slice(1).toLowerCase()
+    : null;
 
   return (
     <Layout breadcrumbs={[{ label: property.address }]}>
@@ -84,19 +96,23 @@ function PropertyDetailPage() {
                        focus:outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-600/20"
           />
 
-          <label
-            className={`flex items-center gap-2 text-sm select-none
-                        ${hasPrevious ? 'text-slate-600 cursor-pointer' : 'text-slate-400 cursor-not-allowed'}`}
-          >
-            <input
-              type="checkbox"
-              checked={inherit}
-              disabled={!hasPrevious}
-              onChange={(e) => setInherit(e.target.checked)}
-              className="w-4 h-4 accent-teal-700"
-            />
-            Inherit photos from previous inspection
-          </label>
+          {type !== 'ROUTINE' && (
+            <label
+              className={`flex items-center gap-2 text-sm select-none
+                          ${inheritSource ? 'text-slate-600 cursor-pointer' : 'text-slate-400 cursor-not-allowed'}`}
+            >
+              <input
+                type="checkbox"
+                checked={inherit}
+                disabled={!inheritSource}
+                onChange={(e) => setInherit(e.target.checked)}
+                className="w-4 h-4 accent-teal-700"
+              />
+              {inheritSource
+                ? `Inherit from ${sourceLabel} inspection (${inheritSource.inspectionDate})`
+                : 'Inherit photos'}
+            </label>
+          )}
 
           <button
             onClick={handleCreate}
@@ -107,9 +123,11 @@ function PropertyDetailPage() {
             {creating ? 'Creating...' : 'Create inspection'}
           </button>
         </div>
-        {!hasPrevious && (
+        {type !== 'ROUTINE' && !inheritSource && (
           <p className="text-xs text-slate-400 mt-3">
-            No previous inspection to inherit from — this will be the first one.
+            {inspections.length === 0
+              ? 'No previous inspection to inherit from — this will be the first one.'
+              : 'Only routine inspections so far — entry/exit inherit from the last entry/exit.'}
           </p>
         )}
       </div>

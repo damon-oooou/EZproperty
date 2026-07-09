@@ -34,9 +34,14 @@ public class InspectionService {
         Property property = propertyRepository.findById(propertyId)
                 .orElseThrow(() -> new EntityNotFoundException("Property not found: " + propertyId));
 
-        // 必须在保存新 inspection 之前找"上一次",原因见下面的解释
+        // ROUTINE 不参与继承:前端已隐藏该选项,这里再挡一层,防止 API 直接传 true。
+        boolean inherit = inheritFromPrevious && type != InspectionType.ROUTINE;
+
+        // 必须在保存新 inspection 之前找"上一次",否则新建的这条自己会成为查询结果。
+        // 来源固定为最近一次非 ROUTINE:Entry→Exit→下一个Entry 自然衔接。
         Optional<Inspection> previous =
-                inspectionRepository.findTopByPropertyIdOrderByInspectionDateDescIdDesc(propertyId);
+                inspectionRepository.findTopByPropertyIdAndTypeNotOrderByInspectionDateDescIdDesc(
+                        propertyId, InspectionType.ROUTINE);
 
         Inspection inspection = new Inspection();
         inspection.setProperty(property);
@@ -44,7 +49,7 @@ public class InspectionService {
         inspection.setInspectionDate(inspectionDate);
         Inspection saved = inspectionRepository.save(inspection);
 
-        if (inheritFromPrevious && previous.isPresent()) {
+        if (inherit && previous.isPresent()) {
             Long previousId = previous.get().getId();
 
             // 1. 照片引用(v0.2 的原有逻辑)
