@@ -3,7 +3,7 @@ package com.propertymap.service;
 import com.propertymap.controller.dto.RoomWithPhotoCountResponse;
 import com.propertymap.model.*;
 import com.propertymap.repository.*;
-import jakarta.persistence.EntityNotFoundException;
+import com.propertymap.security.TenantGuard;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,17 +22,16 @@ public class InspectionService {
 
     private final InspectionRepository inspectionRepository;
     private final InspectionPhotoRepository inspectionPhotoRepository;
-    private final PropertyRepository propertyRepository;
     private final PhotoService photoService;
     private final RoomRepository roomRepository;
     private final RoomConditionRepository roomConditionRepository;
     private final ReportDetailsRepository reportDetailsRepository;
+    private final TenantGuard tenantGuard;
 
     @Transactional
     public Inspection createInspection(Long propertyId, InspectionType type,
                                        LocalDate inspectionDate, boolean inheritFromPrevious) {
-        Property property = propertyRepository.findById(propertyId)
-                .orElseThrow(() -> new EntityNotFoundException("Property not found: " + propertyId));
+        Property property = tenantGuard.property(propertyId);
 
         // ROUTINE 不参与继承:前端已隐藏该选项,这里再挡一层,防止 API 直接传 true。
         boolean inherit = inheritFromPrevious && type != InspectionType.ROUTINE;
@@ -100,23 +99,25 @@ public class InspectionService {
     }
 
     public List<Inspection> getInspectionsForProperty(Long propertyId) {
+        tenantGuard.property(propertyId);
         return inspectionRepository.findByPropertyIdOrderByInspectionDateDescIdDesc(propertyId);
     }
 
     public List<Photo> getPhotosForRoom(Long inspectionId, Long roomId) {
+        tenantGuard.inspection(inspectionId);
         return inspectionPhotoRepository.findPhotosByInspectionIdAndRoomId(inspectionId, roomId);
     }
 
     @Transactional
     public void removePhotosFromInspection(Long inspectionId, List<Long> photoIds) {
+        tenantGuard.inspection(inspectionId); // v0.5:先验归属再删引用
         inspectionPhotoRepository.deleteByInspectionIdAndPhotoIdIn(inspectionId, photoIds);
     }
 
     @Transactional
     public List<Photo> uploadPhotosToInspection(Long inspectionId, Long roomId,
                                                 List<MultipartFile> files) throws IOException {
-        Inspection inspection = inspectionRepository.findById(inspectionId)
-                .orElseThrow(() -> new EntityNotFoundException("Inspection not found: " + inspectionId));
+        Inspection inspection = tenantGuard.inspection(inspectionId);
 
         Room room = photoService.getRoomOrThrow(roomId);
         if (!room.getProperty().getId().equals(inspection.getProperty().getId())) {
@@ -149,8 +150,7 @@ public class InspectionService {
      */
     @Transactional(readOnly = true)
     public List<RoomWithPhotoCountResponse> getRoomsWithPhotoCounts(Long inspectionId) {
-        Inspection inspection = inspectionRepository.findById(inspectionId)
-                .orElseThrow(() -> new EntityNotFoundException("Inspection not found: " + inspectionId));
+        Inspection inspection = tenantGuard.inspection(inspectionId);
 
         List<Room> rooms = roomRepository.findByPropertyIdOrderByPosition(
                 inspection.getProperty().getId());

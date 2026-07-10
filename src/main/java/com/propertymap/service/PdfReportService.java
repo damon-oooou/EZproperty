@@ -7,10 +7,9 @@ import com.propertymap.model.Photo;
 import com.propertymap.model.Property;
 import com.propertymap.model.Room;
 import com.propertymap.repository.InspectionPhotoRepository;
-import com.propertymap.repository.InspectionRepository;
 import com.propertymap.repository.RoomRepository;
+import com.propertymap.security.TenantGuard;
 import com.openhtmltopdf.pdfboxout.PdfRendererBuilder;
-import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -38,10 +37,10 @@ import java.util.List;
 @Slf4j
 public class PdfReportService {
 
-    private final InspectionRepository inspectionRepository;
     private final RoomRepository roomRepository;
     private final InspectionPhotoRepository inspectionPhotoRepository;
     private final ReportService reportService;
+    private final TenantGuard tenantGuard;
     private final TemplateEngine templateEngine; // Spring Boot 自动配置的 SpringTemplateEngine
 
     private static final int MAX_PHOTO_WIDTH = 1200;
@@ -57,8 +56,7 @@ public class PdfReportService {
 
     @Transactional(readOnly = true)
     public GeneratedReport generate(Long inspectionId) {
-        Inspection inspection = inspectionRepository.findById(inspectionId)
-                .orElseThrow(() -> new EntityNotFoundException("Inspection not found: " + inspectionId));
+        Inspection inspection = tenantGuard.inspection(inspectionId); // v0.5:归属校验
         Property property = inspection.getProperty();
 
         ReportDetailsResponse details = reportService.getReportDetails(inspectionId);

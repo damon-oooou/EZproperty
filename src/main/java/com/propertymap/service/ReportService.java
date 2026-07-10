@@ -6,7 +6,7 @@ import com.propertymap.controller.dto.RoomConditionUpdate;
 import com.propertymap.controller.dto.UpdateReportDetailsRequest;
 import com.propertymap.model.*;
 import com.propertymap.repository.*;
-import jakarta.persistence.EntityNotFoundException;
+import com.propertymap.security.TenantGuard;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,10 +20,10 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class ReportService {
 
-    private final InspectionRepository inspectionRepository;
     private final RoomRepository roomRepository;
     private final RoomConditionRepository roomConditionRepository;
     private final ReportDetailsRepository reportDetailsRepository;
+    private final TenantGuard tenantGuard;
 
     /**
      * 和 getRoomsWithPhotoCounts 同一个套路：全房间列表 + 已填数据服务端合并，
@@ -123,8 +123,8 @@ public class ReportService {
         return ReportDetailsResponse.from(reportDetailsRepository.save(details));
     }
 
+    /** v0.5:归属校验统一收口到 TenantGuard,不属于当前 agency 一律 404。 */
     private Inspection getInspectionOrThrow(Long inspectionId) {
-        return inspectionRepository.findById(inspectionId)
-                .orElseThrow(() -> new EntityNotFoundException("Inspection not found: " + inspectionId));
+        return tenantGuard.inspection(inspectionId);
     }
 }

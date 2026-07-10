@@ -21,7 +21,21 @@ EZproperty maintains a long-lived **Property Photo Library**. Photos belong to t
 - Removing a photo from an inspection deletes only the reference; the file and its history remain intact for past inspections
 - The same inheritance applies to report content: room conditions and tenancy details carry over, while per-visit findings (urgent actions, comments) start blank
 
-## Current Status — v0.4.2
+## Current Status — v0.5.1
+
+**Google sign-in (v0.5.1)**
+- "Continue with Google" on the login and register pages (Google Identity Services); backend verifies the ID token signature/audience and issues the same app JWT as password login
+- First Google sign-in auto-registers (creates a single-member agency); an existing password account with the same email simply signs in — the email is already verified by Google
+- Configured via one OAuth Client ID used by both sides: `VITE_GOOGLE_CLIENT_ID` (frontend, `.env.local`) and `GOOGLE_CLIENT_ID` (backend env). Unset = the button is hidden and password login works as normal
+
+
+**Multi-user & authentication (v0.5)**
+- Agency tenant model: users belong to an agency, properties belong to the agency; registration auto-creates a single-member agency, so solo use is unchanged and team sharing needs no future schema change
+- Open registration + JWT login (`/api/auth/register`, `/api/auth/login`, `/api/auth/me`); BCrypt password hashing; stateless Spring Security — the same token API will serve the future iOS app
+- Tenant isolation via a single `TenantGuard` entry point: every property/inspection load verifies agency ownership; foreign resources return 404 (existence not leaked)
+- Frontend: sign-in / create-account pages, protected routes with post-login redirect, automatic `Authorization` header, 401 → session cleared and redirected to login; PDF download switched to authenticated fetch + blob
+- Known limitation: `/uploads/**` photo files stay public (UUID filenames, not enumerable) — signed URLs planned with the S3 migration
+
 
 **Property & inspection management**
 - Google-style home page with instant autocomplete search and create-property flow
@@ -54,9 +68,45 @@ EZproperty maintains a long-lived **Property Photo Library**. Photos belong to t
 | Frontend   | React, Vite, React Router, Tailwind CSS v4 |
 | Storage    | Local filesystem behind a service layer (S3-compatible migration path preserved) |
 
+## How to Run
+
+Prerequisites: Java 17, Maven, Node.js 18+, Docker Desktop.
+
+**1. Database** (PostgreSQL 15 in Docker, data persists in a named volume):
+
+```bash
+docker compose up -d
+```
+
+**2. Backend** (port 8080; Flyway migrations run automatically on startup):
+
+```bash
+mvn spring-boot:run
+```
+
+**3. Frontend** (Vite dev server, port 5173):
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open http://localhost:5173 — you'll land on the sign-in page. Create an account (or use Google sign-in if configured, see below), then search or add your first property.
+
+Optional configuration:
+- **Google sign-in** — see [Google Sign-in Setup](#google-sign-in-setup); without it the button is hidden and password login works as normal
+- **Production** — set a random `JWT_SECRET` env var (the yml default is dev-only) and add your domain to the CORS origins in `CorsConfig`
+
 ## API Overview
 
 ```
+Auth (v0.5)
+  POST      /api/auth/register                              open registration, auto-creates agency
+  POST      /api/auth/login                                 returns JWT (72h)
+  POST      /api/auth/google                                Google ID token -> app JWT (v0.5.1)
+  GET       /api/auth/me                                    current user + agency
+
 Properties
   GET/POST  /api/properties
   GET       /api/properties/{id}
@@ -74,9 +124,11 @@ Reports (v0.4.1+)
   GET       /api/inspections/{id}/report                    PDF download (v0.4.2)
 ```
 
-## Data Model (Flyway V1–V7)
+## Data Model (Flyway V1–V10)
 
 ```
+agencies ─< users                                           (v0.5, tenant boundary)
+agencies ─< properties
 properties ─< rooms ─< photos
 properties ─< inspections ─< inspection_photos >─ photos   (reference join, RESTRICT on photo)
 inspections ─< room_conditions                              (unique per inspection+room)
@@ -91,13 +143,22 @@ inspections ─1 report_details                               (PK = inspection i
 - **v0.4** — UI overhaul: Tailwind v4, Google-style home with autocomplete, room coverage grid, photo lightbox, custom rooms
 - **v0.4.1** — NSW condition report: data model (`room_conditions`, `report_details`), report editor with tri-state conditions and All-satisfactory shortcut, inheritance extended to report content
 - **v0.4.2** — PDF report generation (Thymeleaf + openhtmltopdf) with embedded photos and Download PDF button
+- **v0.5** — Multi-user & authentication: agency tenant model (`agencies`, `users`, `properties.agency_id`), Spring Security + JWT (jjwt), open registration, tenant isolation via `TenantGuard`, login/register UI with protected routes
+- **v0.5.1** — Google sign-in: GIS button on login/register, `/api/auth/google` verifies the ID token and auto-registers first-time users; `users.auth_provider`, `password_hash` nullable
+
+## Google Sign-in Setup
+
+1. [Google Cloud Console](https://console.cloud.google.com/) → create/select a project → **APIs & Services → Credentials → Create Credentials → OAuth client ID** (first time: configure the consent screen, External, only app name + email required)
+2. Application type **Web application**; add **Authorized JavaScript origins**: `http://localhost:5173` (and later your production domain). No redirect URI needed.
+3. Copy the Client ID into:
+   - `frontend/.env.local` → `VITE_GOOGLE_CLIENT_ID=<client-id>`
+   - backend env → `GOOGLE_CLIENT_ID=<client-id>` (or edit `application.yml`)
 
 ## Roadmap
 
-**v0.5 — Multi-user & authentication**
-- Tenant model decision (agency vs. individual PM ownership), data-ownership migration, Spring Security + JWT (shared by web and the future iOS app)
-
 **Later**
+- Team collaboration: invite colleagues into an agency, roles/permissions (schema already supports it)
+- Email verification for password sign-ups (needs a mail provider — Resend / SES / SendGrid); Google accounts are already verified
 - Photo ingest normalisation at upload time: EXIF orientation fix, unified JPEG re-encode, thumbnail generation (also the answer to egress costs — thumbnails for browsing, originals on demand, PDFs generated in-region)
 - Upload format validation (frontend `accept` + backend content-type checks) — scheduled alongside the iOS app, whose camera/export pipeline is fixed to JPEG (`AVCapturePhotoOutput`, quality prioritisation, original resolution); server-side HEIC decoding deliberately not planned
 - iOS app v1: native camera + PHPicker batch import; v2: in-app guided capture per room

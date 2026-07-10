@@ -1,6 +1,15 @@
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import { getStoredUser, logout } from '../api/client';
 
 function Layout({ breadcrumbs = [], children }) {
+  const navigate = useNavigate();
+  const user = getStoredUser();
+
+  function handleLogout() {
+    logout();
+    navigate('/login');
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="bg-white border-b border-slate-200">
@@ -28,6 +37,21 @@ function Layout({ breadcrumbs = [], children }) {
                 );
               })}
             </nav>
+          )}
+
+          {/* v0.5:当前用户 + 登出 */}
+          {user && (
+            <div className="ml-auto flex items-center gap-3 shrink-0">
+              <span className="text-sm text-slate-500 hidden sm:inline" title={user.email}>
+                {user.fullName}
+              </span>
+              <button
+                onClick={handleLogout}
+                className="text-sm text-slate-500 hover:text-teal-700 transition-colors"
+              >
+                Log out
+              </button>
+            </div>
           )}
         </div>
       </header>

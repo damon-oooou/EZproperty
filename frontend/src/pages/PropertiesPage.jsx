@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getProperties, createProperty } from '../api/client';
+import { getProperties, createProperty, getStoredUser, logout } from '../api/client';
 
 /** 搜索词高亮:地址中匹配的片段加粗 */
 function Highlight({ text, query }) {
@@ -103,8 +103,30 @@ function PropertiesPage() {
     }
   }
 
+  const user = getStoredUser();
+
+  function handleLogout() {
+    logout();
+    navigate('/login');
+  }
+
   return (
     <div className="min-h-screen bg-white flex flex-col items-center justify-center px-6 pb-24">
+      {/* v0.5:首页不走 Layout(全屏搜索设计),用户信息单独固定在右上角 */}
+      {user && (
+        <div className="absolute top-0 right-0 p-4 flex items-center gap-3">
+          <span className="text-sm text-slate-500" title={user.email}>
+            {user.fullName}
+          </span>
+          <button
+            onClick={handleLogout}
+            className="text-sm text-slate-500 hover:text-teal-700 transition-colors"
+          >
+            Log out
+          </button>
+        </div>
+      )}
+
       {/* Wordmark */}
       <h1 className="text-5xl font-semibold tracking-tight mb-2 select-none">
         <span className="text-teal-700">EZ</span>

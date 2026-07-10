@@ -4,7 +4,7 @@ import {
   updateConditions,
   getReportDetails,
   updateReportDetails,
-  getReportPdfUrl,
+  downloadReportPdf,
 } from '../api/client';
 
 /**
@@ -60,6 +60,19 @@ function ReportEditor({ inspectionId }) {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+
+  // v0.5:PDF 端点需要 Authorization 头,<a href> 直链不再可用,改走 fetch + blob
+  async function handleDownloadPdf() {
+    setDownloading(true);
+    try {
+      await downloadReportPdf(inspectionId);
+    } catch {
+      // 401 已由 client 统一处理跳登录;其余错误静默,按钮恢复即可重试
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -165,14 +178,17 @@ function ReportEditor({ inspectionId }) {
           {dirty && !saveError && (
             <span className="text-sm text-amber-600">Unsaved changes</span>
           )}
-          <a
-            href={getReportPdfUrl(inspectionId)}
+          <button
+            type="button"
+            onClick={handleDownloadPdf}
+            disabled={downloading}
             className="px-4 py-2 rounded-lg text-sm font-medium border border-slate-300
-                       text-slate-700 hover:border-teal-600 hover:text-teal-700 transition-colors"
+                       text-slate-700 hover:border-teal-600 hover:text-teal-700 transition-colors
+                       disabled:opacity-60"
             title={dirty ? 'Unsaved changes won\u2019t appear in the PDF until you save' : undefined}
           >
-            Download PDF
-          </a>
+            {downloading ? 'Preparing...' : 'Download PDF'}
+          </button>
           <button
             onClick={handleSave}
             disabled={!dirty || saving}

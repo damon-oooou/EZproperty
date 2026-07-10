@@ -2,9 +2,8 @@ package com.propertymap.service;
 
 import com.propertymap.model.Property;
 import com.propertymap.model.Room;
-import com.propertymap.repository.PropertyRepository;
 import com.propertymap.repository.RoomRepository;
-import jakarta.persistence.EntityNotFoundException;
+import com.propertymap.security.TenantGuard;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -15,20 +14,15 @@ import java.util.List;
 public class RoomService {
 
     private final RoomRepository roomRepository;
-    private final PropertyRepository propertyRepository;
+    private final TenantGuard tenantGuard;
 
     public List<Room> getRoomsByProperty(Long propertyId) {
+        tenantGuard.property(propertyId); // v0.5:先验归属,再查房间
         return roomRepository.findByPropertyIdOrderByPosition(propertyId);
     }
 
-    public Room getRoomById(Long id) {
-        return roomRepository.findById(id)
-            .orElseThrow(() -> new RuntimeException("Room not found: " + id));
-    }
-
     public Room addRoom(Long propertyId, String name) {
-        Property property = propertyRepository.findById(propertyId)
-            .orElseThrow(() -> new EntityNotFoundException("Property not found: " + propertyId));
+        Property property = tenantGuard.property(propertyId);
 
         List<Room> existing = roomRepository.findByPropertyIdOrderByPosition(propertyId);
         Room room = new Room();
