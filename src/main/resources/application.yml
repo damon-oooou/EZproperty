@@ -21,10 +21,11 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+  # v0.5.2:显式收紧上传上限(单张 15MB / 整个请求 100MB),上云后即账单保护
   servlet:
     multipart:
       enabled: true
-      max-file-size: 20MB
+      max-file-size: 15MB
       max-request-size: 100MB
 
 server:

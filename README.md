@@ -21,7 +21,12 @@ EZproperty maintains a long-lived **Property Photo Library**. Photos belong to t
 - Removing a photo from an inspection deletes only the reference; the file and its history remain intact for past inspections
 - The same inheritance applies to report content: room conditions and tenancy details carry over, while per-visit findings (urgent actions, comments) start blank
 
-## Current Status — v0.5.1
+## Current Status — v0.5.2
+
+**Upload hardening (v0.5.2)**
+- Format validation: only JPEG and PNG accepted — frontend `accept="image/jpeg,image/png"` plus client-side type check, backend verification by magic bytes (declared content-type not trusted); HEIC rejected with a clear conversion hint
+- Size limits set explicitly: 15MB per photo / 100MB per request (`max-file-size` / `max-request-size`) — bill protection once storage moves to the cloud; over-limit uploads get a clear message on both ends instead of a blank 500
+- Download PDF auto-saves: unsaved report changes are saved automatically before the PDF is generated, so the download always reflects the latest edits (if the save fails, no PDF is produced)
 
 **Google sign-in (v0.5.1)**
 - "Continue with Google" on the login and register pages (Google Identity Services); backend verifies the ID token signature/audience and issues the same app JWT as password login
@@ -145,6 +150,7 @@ inspections ─1 report_details                               (PK = inspection i
 - **v0.4.2** — PDF report generation (Thymeleaf + openhtmltopdf) with embedded photos and Download PDF button
 - **v0.5** — Multi-user & authentication: agency tenant model (`agencies`, `users`, `properties.agency_id`), Spring Security + JWT (jjwt), open registration, tenant isolation via `TenantGuard`, login/register UI with protected routes
 - **v0.5.1** — Google sign-in: GIS button on login/register, `/api/auth/google` verifies the ID token and auto-registers first-time users; `users.auth_provider`, `password_hash` nullable
+- **v0.5.2** — Upload hardening: JPEG/PNG-only validation (frontend `accept` + backend magic bytes, HEIC rejected with a clear message), explicit size limits (15MB/photo, 100MB/request) with friendly errors, Download PDF auto-saves unsaved report changes first
 
 ## Google Sign-in Setup
 
@@ -160,7 +166,7 @@ inspections ─1 report_details                               (PK = inspection i
 - Team collaboration: invite colleagues into an agency, roles/permissions (schema already supports it)
 - Email verification for password sign-ups (needs a mail provider — Resend / SES / SendGrid); Google accounts are already verified
 - Photo ingest normalisation at upload time: EXIF orientation fix, unified JPEG re-encode, thumbnail generation (also the answer to egress costs — thumbnails for browsing, originals on demand, PDFs generated in-region)
-- Upload format validation (frontend `accept` + backend content-type checks) — scheduled alongside the iOS app, whose camera/export pipeline is fixed to JPEG (`AVCapturePhotoOutput`, quality prioritisation, original resolution); server-side HEIC decoding deliberately not planned
+- iOS camera/export pipeline fixed to JPEG (`AVCapturePhotoOutput`, quality prioritisation, original resolution); server-side HEIC decoding deliberately not planned — HEIC uploads are rejected with a conversion hint (v0.5.2)
 - iOS app v1: native camera + PHPicker batch import; v2: in-app guided capture per room
 - Per-agency report template customisation; Victorian (CAV) item-level template
 - Soft deletes; embedded PDF font for non-Latin comment text

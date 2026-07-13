@@ -145,10 +145,16 @@ export async function uploadInspectionPhotos(inspectionId, roomId, files) {
     formData.append('files', file);
   }
   // 注意:FormData 不能手动设 Content-Type,浏览器会自动带 boundary
-  return requestJson(`/inspections/${inspectionId}/rooms/${roomId}/photos`, {
+  const res = await request(`/inspections/${inspectionId}/rooms/${roomId}/photos`, {
     method: 'POST',
     body: formData,
   });
+  // v0.5.2:格式/大小校验失败时后端返回 4xx + message,这里透传给页面提示
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.message || 'Upload failed, please try again');
+  }
+  return res.json();
 }
 
 export async function deleteInspectionPhotos(inspectionId, photoIds) {

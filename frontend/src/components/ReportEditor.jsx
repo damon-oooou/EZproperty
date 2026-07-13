@@ -63,9 +63,14 @@ function ReportEditor({ inspectionId }) {
   const [downloading, setDownloading] = useState(false);
 
   // v0.5:PDF 端点需要 Authorization 头,<a href> 直链不再可用,改走 fetch + blob
+  // v0.5.2:有未保存改动时先自动保存再下载,保证 PDF 永远是最新内容;保存失败则不下载
   async function handleDownloadPdf() {
     setDownloading(true);
     try {
+      if (dirty) {
+        const ok = await saveNow();
+        if (!ok) return;
+      }
       await downloadReportPdf(inspectionId);
     } catch {
       // 401 已由 client 统一处理跳登录;其余错误静默,按钮恢复即可重试
@@ -122,8 +127,8 @@ function ReportEditor({ inspectionId }) {
     setSaveError(false);
   }
 
-  async function handleSave() {
-    if (saving || !dirty) return;
+  // v0.5.2:保存逻辑抽成可复用的 saveNow(返回是否成功),Save 按钮和下载前自动保存共用
+  async function saveNow() {
     setSaving(true);
     setSaveError(false);
     try {
@@ -155,11 +160,18 @@ function ReportEditor({ inspectionId }) {
       setDetails(newDetails);
       setConditions(newConditions);
       setDirty(false);
+      return true;
     } catch {
       setSaveError(true);
+      return false;
     } finally {
       setSaving(false);
     }
+  }
+
+  function handleSave() {
+    if (saving || !dirty) return;
+    saveNow();
   }
 
   if (loading || !details) {
@@ -181,13 +193,13 @@ function ReportEditor({ inspectionId }) {
           <button
             type="button"
             onClick={handleDownloadPdf}
-            disabled={downloading}
+            disabled={downloading || saving}
             className="px-4 py-2 rounded-lg text-sm font-medium border border-slate-300
                        text-slate-700 hover:border-teal-600 hover:text-teal-700 transition-colors
                        disabled:opacity-60"
-            title={dirty ? 'Unsaved changes won\u2019t appear in the PDF until you save' : undefined}
+            title={dirty ? 'Your changes will be saved automatically before the PDF is generated' : undefined}
           >
-            {downloading ? 'Preparing...' : 'Download PDF'}
+            {downloading ? (dirty ? 'Saving & preparing...' : 'Preparing...') : 'Download PDF'}
           </button>
           <button
             onClick={handleSave}

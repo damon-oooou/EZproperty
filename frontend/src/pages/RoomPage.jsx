@@ -21,6 +21,7 @@ function RoomPage() {
   const [selectedIds, setSelectedIds] = useState([]);
   const [lightboxIndex, setLightboxIndex] = useState(-1);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
   const [removing, setRemoving] = useState(false);
 
   useEffect(() => {
@@ -69,15 +70,48 @@ function RoomPage() {
     }
   }
 
+  // v0.5.2:前端先挡一道格式(只收 JPEG/PNG,HEIC 明确提示)和大小(单张 15MB),
+  // 后端仍按 magic bytes / multipart 上限做最终校验。
+  const MAX_FILE_MB = 15;
+  const ACCEPTED_TYPES = ['image/jpeg', 'image/png'];
+
+  function validateFiles(files) {
+    for (const file of files) {
+      if (!ACCEPTED_TYPES.includes(file.type)) {
+        const isHeic =
+          /heic|heif/i.test(file.type) || /\.(heic|heif)$/i.test(file.name);
+        return isHeic
+          ? `"${file.name}" is a HEIC file, which isn't supported. Please convert it to JPEG (on iPhone: Settings > Camera > Formats > Most Compatible).`
+          : `"${file.name}" isn't a supported format. Only JPEG and PNG are accepted.`;
+      }
+      if (file.size > MAX_FILE_MB * 1024 * 1024) {
+        return `"${file.name}" is ${(file.size / 1024 / 1024).toFixed(1)}MB — each photo must be ${MAX_FILE_MB}MB or smaller.`;
+      }
+    }
+    return null;
+  }
+
   async function handleUpload(e) {
     const files = e.target.files;
     if (!files || files.length === 0) return;
+    setUploadError(null);
+
+    const error = validateFiles(files);
+    if (error) {
+      setUploadError(error);
+      e.target.value = '';
+      return;
+    }
+
     setUploading(true);
     try {
       await uploadInspectionPhotos(inspectionId, roomId, files);
-      e.target.value = '';
       await loadPhotos();
+    } catch (err) {
+      setUploadError(err.message || 'Upload failed, please try again');
     } finally {
+      // 失败也要清空 input,否则重选同一文件不会触发 onChange
+      e.target.value = '';
       setUploading(false);
     }
   }
@@ -147,13 +181,27 @@ function RoomPage() {
             <input
               type="file"
               multiple
-              accept="image/*"
+              accept="image/jpeg,image/png"
               onChange={handleUpload}
               className="hidden"
             />
           </label>
         </div>
       </div>
+
+      {/* v0.5.2:上传错误提示(格式 / 大小) */}
+      {uploadError && (
+        <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <span className="flex-1">{uploadError}</span>
+          <button
+            onClick={() => setUploadError(null)}
+            className="shrink-0 font-medium hover:text-red-900"
+            title="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* 照片网格 / 空状态 */}
       {photos.length === 0 ? (
