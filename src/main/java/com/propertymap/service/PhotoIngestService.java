@@ -8,7 +8,11 @@ import lombok.extern.slf4j.Slf4j;
 import net.coobird.thumbnailator.Thumbnails;
 import org.springframework.stereotype.Service;
 
+import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.MemoryCacheImageOutputStream;
 import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.geom.AffineTransform;
@@ -19,6 +23,7 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Date;
+import java.util.concurrent.Semaphore;
 
 /**
  * v0.6 阶段 A:照片 ingest 规格化管线 —— 所有进入系统的照片的唯一咽喉位置。
@@ -33,6 +38,13 @@ import java.util.Date;
  *        缩略图 长边 200px     q0.8    房间网格 / 列表
  *
  * 原始上传字节不保留 —— "原图" = 规格化产物(摆正 + 剥 EXIF + q0.85 全分辨率)。
+ *
+ * 内存纪律(生产 1GB 容器 / -Xmx700m 实测调优,勿随意破坏):
+ *   - 摆正与 RGB 归一合并为一次绘制:全程只存在"解码图 + 目标图"两份全尺寸位图
+ *   - 目标图用 TYPE_3BYTE_BGR(3 字节/px),比 TYPE_INT_RGB 省 25% 内存
+ *   - 原图编码直接走 ImageWriter,不经过任何中间副本
+ *   - INGEST_GATE 信号量:同一时刻仅一张图在做像素级处理,并发上传排队而非叠内存
+ *     (一张 4800 万像素照片的解码+目标 ≈ 300MB,两张并发即爆堆)
  */
 @Service
 @Slf4j
@@ -42,6 +54,9 @@ public class PhotoIngestService {
     private static final int THUMBNAIL_LONG_EDGE = 200;
     private static final float QUALITY_MAIN = 0.85f;
     private static final float QUALITY_THUMBNAIL = 0.8f;
+
+    /** 全局像素处理闸门:见类注释的内存纪律 */
+    private static final Semaphore INGEST_GATE = new Semaphore(1);
 
     /** 管线产物:三档 JPEG 字节 + EXIF 拍摄时间(缺失为 null) */
     public record IngestResult(byte[] original, byte[] medium, byte[] thumbnail,
@@ -57,36 +72,40 @@ public class PhotoIngestService {
         // ---- 1. 重编码前读 EXIF ----
         ExifInfo exif = readExif(rawBytes, fileName);
 
-        // ---- 2. 解码像素 ----
-        BufferedImage decoded;
+        INGEST_GATE.acquireUninterruptibly();
         try {
-            decoded = ImageIO.read(new ByteArrayInputStream(rawBytes));
-        } catch (IOException e) {
-            log.warn("Image decode failed for \"{}\": {}", fileName, e.getMessage());
-            decoded = null;
+            // ---- 2. 解码像素 ----
+            BufferedImage decoded;
+            try {
+                decoded = ImageIO.read(new ByteArrayInputStream(rawBytes));
+            } catch (IOException e) {
+                log.warn("Image decode failed for \"{}\": {}", fileName, e.getMessage());
+                decoded = null;
+            }
+            if (decoded == null) {
+                throw new IllegalArgumentException(
+                        "\"" + fileName + "\" could not be decoded as an image. "
+                        + "The file may be corrupted.");
+            }
+
+            // ---- 3. 摆正 + 归一到 RGB 白底(单次绘制,PNG 透明/CMYK 一并处理)----
+            BufferedImage upright = normalizeOrientation(decoded, exif.orientation());
+            decoded.flush();
+            decoded = null; // 尽早释放解码位图,给编码阶段腾内存
+
+            // ---- 4. 派生三档 ----
+            byte[] original = encodeJpeg(upright, QUALITY_MAIN);
+            byte[] medium = longEdge(upright) <= MEDIUM_LONG_EDGE
+                    ? original // 小于 1600 不放大:中间档与原图同像素同质量,直接复用字节
+                    : encodeJpeg(scaleToLongEdge(upright, MEDIUM_LONG_EDGE), QUALITY_MAIN);
+            byte[] thumbnail = encodeJpeg(
+                    scaleToLongEdge(upright, THUMBNAIL_LONG_EDGE), QUALITY_THUMBNAIL);
+            upright.flush();
+
+            return new IngestResult(original, medium, thumbnail, exif.takenAt());
+        } finally {
+            INGEST_GATE.release();
         }
-        if (decoded == null) {
-            throw new IllegalArgumentException(
-                    "\"" + fileName + "\" could not be decoded as an image. "
-                    + "The file may be corrupted.");
-        }
-
-        // 统一铺到 RGB 白底画布:PNG 透明通道、CMYK 解码产物等都归一,
-        // 后续 JPEG 编码不会因色彩模型失败。
-        BufferedImage rgb = toRgb(decoded);
-
-        // ---- 3. 按 Orientation 摆正 ----
-        BufferedImage upright = applyOrientation(rgb, exif.orientation());
-
-        // ---- 4. 派生三档 ----
-        byte[] original = encodeJpeg(upright, QUALITY_MAIN);
-        byte[] medium = longEdge(upright) <= MEDIUM_LONG_EDGE
-                ? original // 小于 1600 不放大:中间档与原图同像素同质量,直接复用字节
-                : encodeJpeg(scaleToLongEdge(upright, MEDIUM_LONG_EDGE), QUALITY_MAIN);
-        byte[] thumbnail = encodeJpeg(
-                scaleToLongEdge(upright, THUMBNAIL_LONG_EDGE), QUALITY_THUMBNAIL);
-
-        return new IngestResult(original, medium, thumbnail, exif.takenAt());
     }
 
     // ===== EXIF =====
@@ -121,67 +140,35 @@ public class PhotoIngestService {
 
     // ===== 像素变换 =====
 
-    private BufferedImage toRgb(BufferedImage src) {
-        if (src.getType() == BufferedImage.TYPE_INT_RGB) return src;
-        BufferedImage rgb = new BufferedImage(src.getWidth(), src.getHeight(),
-                BufferedImage.TYPE_INT_RGB);
-        Graphics2D g = rgb.createGraphics();
-        g.drawImage(src, 0, 0, Color.WHITE, null);
-        g.dispose();
-        return rgb;
-    }
-
     /**
-     * EXIF Orientation 1-8 全量实现:
+     * EXIF Orientation 1-8 全量实现,与 RGB 白底归一合并为单次绘制:
      *   1 正常  2 水平翻转  3 旋转180  4 垂直翻转
-     *   5 转置(旋90CW+水平翻转)  6 旋90CW  7 反转置(旋270CW+水平翻转)  8 旋270CW
+     *   5 转置  6 旋90CW  7 反转置  8 旋270CW
+     * 变换矩阵为业界通用写法(metadata-extractor 官方示例同款)。
      */
-    private BufferedImage applyOrientation(BufferedImage img, int orientation) {
-        return switch (orientation) {
-            case 2 -> flipHorizontal(img);
-            case 3 -> rotate(img, 180);
-            case 4 -> flipVertical(img);
-            case 5 -> flipHorizontal(rotate(img, 90));
-            case 6 -> rotate(img, 90);
-            case 7 -> flipHorizontal(rotate(img, 270));
-            case 8 -> rotate(img, 270);
-            default -> img; // 1 或缺失
-        };
-    }
+    private BufferedImage normalizeOrientation(BufferedImage src, int orientation) {
+        int w = src.getWidth(), h = src.getHeight();
+        boolean swap = orientation >= 5; // 5-8 都是 90/270 度族,宽高互换
+        int outW = swap ? h : w;
+        int outH = swap ? w : h;
 
-    /** 顺时针旋转 90/180/270 度 */
-    private BufferedImage rotate(BufferedImage img, int degreesCw) {
-        int w = img.getWidth(), h = img.getHeight();
-        boolean quarter = degreesCw == 90 || degreesCw == 270;
-        BufferedImage out = new BufferedImage(quarter ? h : w, quarter ? w : h,
-                BufferedImage.TYPE_INT_RGB);
-        Graphics2D g = out.createGraphics();
         AffineTransform t = new AffineTransform();
-        switch (degreesCw) {
-            case 90 -> { t.translate(h, 0); t.quadrantRotate(1); }
-            case 180 -> { t.translate(w, h); t.quadrantRotate(2); }
-            case 270 -> { t.translate(0, w); t.quadrantRotate(3); }
-            default -> throw new IllegalArgumentException("Unsupported rotation: " + degreesCw);
+        switch (orientation) {
+            case 2 -> { t.scale(-1, 1); t.translate(-w, 0); }
+            case 3 -> { t.translate(w, h); t.rotate(Math.PI); }
+            case 4 -> { t.scale(1, -1); t.translate(0, -h); }
+            case 5 -> { t.rotate(-Math.PI / 2); t.scale(-1, 1); }
+            case 6 -> { t.translate(h, 0); t.rotate(Math.PI / 2); }
+            case 7 -> { t.scale(-1, 1); t.translate(-h, 0); t.translate(0, w); t.rotate(3 * Math.PI / 2); }
+            case 8 -> { t.translate(0, w); t.rotate(3 * Math.PI / 2); }
+            default -> { /* 1 或缺失:恒等,仍走一次绘制以完成 RGB 白底归一 */ }
         }
-        g.drawImage(img, t, null);
-        g.dispose();
-        return out;
-    }
 
-    private BufferedImage flipHorizontal(BufferedImage img) {
-        int w = img.getWidth(), h = img.getHeight();
-        BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+        BufferedImage out = new BufferedImage(outW, outH, BufferedImage.TYPE_3BYTE_BGR);
         Graphics2D g = out.createGraphics();
-        g.drawImage(img, w, 0, -w, h, null);
-        g.dispose();
-        return out;
-    }
-
-    private BufferedImage flipVertical(BufferedImage img) {
-        int w = img.getWidth(), h = img.getHeight();
-        BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
-        Graphics2D g = out.createGraphics();
-        g.drawImage(img, 0, h, w, -h, null);
+        g.setColor(Color.WHITE);
+        g.fillRect(0, 0, outW, outH); // PNG 透明通道压到白底
+        g.drawImage(src, t, null);
         g.dispose();
         return out;
     }
@@ -197,14 +184,23 @@ public class PhotoIngestService {
         return Thumbnails.of(img).size(target, target).asBufferedImage();
     }
 
-    /** 从 BufferedImage 编码 JPEG:纯像素重写,产物不含任何 EXIF(含 GPS/Orientation)。 */
+    /**
+     * 从 BufferedImage 直接编码 JPEG(ImageWriter,零中间副本):
+     * 纯像素重写,产物不含任何 EXIF(含 GPS/Orientation)。
+     */
     private byte[] encodeJpeg(BufferedImage img, float quality) throws IOException {
+        ImageWriter writer = ImageIO.getImageWritersByFormatName("jpg").next();
+        ImageWriteParam param = writer.getDefaultWriteParam();
+        param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+        param.setCompressionQuality(quality);
+
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        Thumbnails.of(img)
-                .scale(1.0)
-                .outputFormat("jpg")
-                .outputQuality(quality)
-                .toOutputStream(out);
+        try (MemoryCacheImageOutputStream stream = new MemoryCacheImageOutputStream(out)) {
+            writer.setOutput(stream);
+            writer.write(null, new IIOImage(img, null, null), param);
+        } finally {
+            writer.dispose();
+        }
         return out.toByteArray();
     }
 }
