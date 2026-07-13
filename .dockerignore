@@ -1,0 +1,9 @@
+# 构建上下文瘦身:后端镜像只需要 pom.xml + src
+target/
+frontend/
+uploads/
+docs/
+.git/
+.gitignore
+README.md
+*.md

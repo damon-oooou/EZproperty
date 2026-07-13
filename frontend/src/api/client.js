@@ -1,4 +1,9 @@
-const BASE_URL = 'http://localhost:8080/api';
+// v0.6 阶段 C:API 地址统一从 VITE_API_BASE_URL 读取(不含 /api 后缀,如
+// https://api.example.com)。未配置时回退本地开发地址。
+// 部署:Vercel 环境变量先填 Railway 生成域名,正式域名生效后换 https://api.<domain>。
+export const API_ORIGIN =
+  import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+const BASE_URL = `${API_ORIGIN}/api`;
 
 // ===== v0.5: Auth(token 与用户信息存 localStorage,web/iOS 共用同一套 JWT API)=====
 

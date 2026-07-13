@@ -7,10 +7,28 @@ import {
   getInspectionPhotos,
   uploadInspectionPhotos,
   deleteInspectionPhotos,
+  API_ORIGIN,
 } from '../api/client';
 import Layout from '../components/Layout';
 
-const API_ORIGIN = 'http://localhost:8080';
+// v0.6:后端返回三档 URL。阶段 A(本地)是 /uploads/... 相对路径,需要拼 API origin;
+// 阶段 B 起 prod 返回 R2 presigned 绝对 URL,原样使用。
+function photoSrc(url) {
+  return url.startsWith('http') ? url : `${API_ORIGIN}${url}`;
+}
+
+// v0.6:照片时间措辞规则 —— takenAt 非空显示 "Taken {日期}"(EXIF 拍摄时间),
+// 为空回退 "Uploaded {日期}"。禁止拿上传时间冒充拍摄时间。
+function photoDateLabel(photo) {
+  if (photo.takenAt) return `Taken ${formatDate(photo.takenAt)}`;
+  if (photo.uploadedAt) return `Uploaded ${formatDate(photo.uploadedAt)}`;
+  return '';
+}
+
+function formatDate(isoDateTime) {
+  const d = new Date(isoDateTime);
+  return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+}
 
 function RoomPage() {
   const { propertyId, inspectionId, roomId } = useParams();
@@ -203,7 +221,7 @@ function RoomPage() {
         </div>
       )}
 
-      {/* 照片网格 / 空状态 */}
+      {/* 照片网格(v0.6:缩略图档)/ 空状态 */}
       {photos.length === 0 ? (
         <div className="border border-dashed border-slate-300 rounded-2xl p-12 text-center text-slate-400">
           No photos for this room in this inspection.
@@ -222,7 +240,7 @@ function RoomPage() {
                 onClick={() => setLightboxIndex(i)}
               >
                 <img
-                  src={`${API_ORIGIN}${photo.url}`}
+                  src={photoSrc(photo.thumbnailUrl)}
                   alt={photo.fileName}
                   className="w-full aspect-square object-cover"
                 />
@@ -253,19 +271,22 @@ function RoomPage() {
         </div>
       )}
 
-      {/* Lightbox */}
+      {/* Lightbox(v0.6:中间档 + 查看原图入口 + 拍摄/上传日期) */}
       {lightboxPhoto && (
         <div
           className="fixed inset-0 bg-slate-900/90 z-30 flex flex-col items-center justify-center px-6"
           onClick={() => setLightboxIndex(-1)}
         >
           <img
-            src={`${API_ORIGIN}${lightboxPhoto.url}`}
+            src={photoSrc(lightboxPhoto.mediumUrl)}
             alt={lightboxPhoto.fileName}
-            className="max-h-[82vh] max-w-[92vw] object-contain rounded-lg"
+            className="max-h-[78vh] max-w-[92vw] object-contain rounded-lg"
             onClick={(e) => e.stopPropagation()}
           />
-          <div className="mt-4 text-slate-300 text-sm flex items-center gap-4">
+          <div className="mt-3 text-slate-300 text-sm" onClick={(e) => e.stopPropagation()}>
+            {photoDateLabel(lightboxPhoto)}
+          </div>
+          <div className="mt-2 text-slate-300 text-sm flex items-center gap-4">
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -279,6 +300,16 @@ function RoomPage() {
             <span>
               {lightboxIndex + 1} / {photos.length} · {lightboxPhoto.fileName}
             </span>
+            <a
+              href={photoSrc(lightboxPhoto.originalUrl)}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="px-3 py-1 rounded underline hover:bg-white/10"
+              title="Open the full-resolution image in a new tab"
+            >
+              View original ↗
+            </a>
             <button
               onClick={(e) => {
                 e.stopPropagation();

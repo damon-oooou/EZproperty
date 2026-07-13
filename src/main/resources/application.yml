@@ -31,8 +31,30 @@ spring:
 server:
   port: 8080
 
+# v0.6 阶段 D:Actuator 只公开 health(UptimeRobot 探测用),其余端点一律不暴露
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+# v0.6 阶段 D:Sentry。DSN 为空 = SDK 禁用(dev 默认),prod 由环境变量提供
+sentry:
+  dsn: ${SENTRY_DSN:}
+  send-default-pii: false
+
 file:
   upload-dir: uploads
+
+# v0.6 阶段 B:对象存储(Cloudflare R2,S3 兼容)。
+# 仅 prod profile 的 S3PhotoStorage 使用;dev 走 LocalPhotoStorage,不读这些值。
+# 全部来自环境变量,无默认凭证。
+storage:
+  r2:
+    endpoint: ${R2_ENDPOINT:}
+    access-key: ${R2_ACCESS_KEY:}
+    secret-key: ${R2_SECRET_KEY:}
+    bucket: ${R2_BUCKET:}
 
 # v0.5 JWT 配置。secret 仅供本地开发,生产环境必须用环境变量 JWT_SECRET 覆盖。
 jwt:

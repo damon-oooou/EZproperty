@@ -4,59 +4,79 @@ import com.propertymap.model.Photo;
 import com.propertymap.model.Room;
 import com.propertymap.repository.PhotoRepository;
 import com.propertymap.repository.RoomRepository;
+import com.propertymap.storage.PhotoKeys;
+import com.propertymap.storage.PhotoStorage;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Value;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class PhotoService {
 
     private final PhotoRepository photoRepository;
     private final RoomRepository roomRepository;
-
-    @Value("${file.upload-dir}")
-    private String uploadDir;
+    private final PhotoIngestService photoIngestService;
+    private final PhotoStorage photoStorage;
 
     public Room getRoomOrThrow(Long roomId) {
         return roomRepository.findById(roomId)
             .orElseThrow(() -> new RuntimeException("Room not found: " + roomId));
     }
 
+    /**
+     * v0.6:上传入口。每个文件先过 v0.5.2 magic-bytes 校验,
+     * 再走 PhotoIngestService 规格化管线,产出三档 JPEG 后经 PhotoStorage 落盘 + 入库。
+     *
+     * 三档必须全部成功才算该照片入库成功:任一档写入失败,本方法删除本批已写的
+     * 全部对象后抛出异常,外层事务回滚 DB 行 —— 不留孤儿文件、不留孤儿行。
+     */
     public List<Photo> storePhotos(Room room, List<MultipartFile> files) throws IOException {
-        // v0.5.2:先整体校验再落盘,避免一批里混入非法文件导致部分写入
+        // 先整体校验再处理,避免一批里混入非法文件导致部分写入
         for (MultipartFile file : files) {
             validateImage(file);
         }
 
-        Path uploadPath = Paths.get(uploadDir, String.valueOf(room.getId()));
-        Files.createDirectories(uploadPath);
-
+        List<String> writtenMainKeys = new ArrayList<>();
         List<Photo> saved = new ArrayList<>();
-        for (MultipartFile file : files) {
-            String fileName = UUID.randomUUID() + "_" + file.getOriginalFilename();
-            Path filePath = uploadPath.resolve(fileName);
-            Files.copy(file.getInputStream(), filePath);
+        try {
+            for (MultipartFile file : files) {
+                String name = file.getOriginalFilename() == null ? "photo" : file.getOriginalFilename();
 
-            Photo photo = new Photo();
-            photo.setRoom(room);
-            photo.setFileName(file.getOriginalFilename());
-            photo.setFilePath(filePath.toString());
-            photo.setFileSize(file.getSize());
-            saved.add(photoRepository.save(photo));
+                PhotoIngestService.IngestResult result =
+                        photoIngestService.ingest(file.getBytes(), name);
+
+                String key = UUID.randomUUID() + ".jpg";
+                writtenMainKeys.add(key); // 先登记再写:写一半失败也能被清理
+                photoStorage.save(key, result.original(), "image/jpeg");
+                photoStorage.save(PhotoKeys.medium(key), result.medium(), "image/jpeg");
+                photoStorage.save(PhotoKeys.thumbnail(key), result.thumbnail(), "image/jpeg");
+
+                Photo photo = new Photo();
+                photo.setRoom(room);
+                photo.setFileName(name);
+                photo.setStorageKey(key);
+                photo.setFileSize((long) result.original().length);
+                photo.setTakenAt(result.takenAt());
+                saved.add(photoRepository.save(photo));
+            }
+            return saved;
+        } catch (RuntimeException | IOException e) {
+            // PhotoStorage.delete 按主 key 一并清理三档变体,且尽力而为不抛出
+            for (String key : writtenMainKeys) {
+                photoStorage.delete(key);
+            }
+            throw e;
         }
-        return saved;
     }
 
     // ===== v0.5.2:上传格式校验(只收 JPEG/PNG,按 magic bytes 判断,不信任声明的 content-type)=====

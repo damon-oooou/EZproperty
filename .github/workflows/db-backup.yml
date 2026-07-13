@@ -1,0 +1,69 @@
+# v0.6 阶段 D:每日 pg_dump 生产库 -> 上传 R2 备份桶 ezproperty-backups。
+#
+# 需要的 GitHub Actions Secrets(仓库 Settings -> Secrets and variables -> Actions):
+#   PROD_DATABASE_URL        Railway PG 的公网连接串(postgresql://...,用 Public Networking 的地址)
+#   R2_BACKUP_ENDPOINT       https://<account_id>.r2.cloudflarestorage.com
+#   R2_BACKUP_ACCESS_KEY     建议单独建一个只对 ezproperty-backups 桶有写权限的 token
+#   R2_BACKUP_SECRET_KEY
+#
+# 保留策略:daily/ 前缀靠 R2 生命周期规则 30 天过期(控制台配置);
+# 每月 1 日额外写一份 monthly/ 前缀,长期保留。
+# 仓库为 public:任何凭证都只能进 Secrets,绝不进代码或 workflow 明文。
+
+name: Daily DB backup
+
+on:
+  schedule:
+    - cron: "0 17 * * *"   # 17:00 UTC = 悉尼凌晨 3-4 点(随冬夏令时)
+  workflow_dispatch: {}     # 允许手动触发(验收 & 演练用)
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Railway PG 版本可能高于 runner 自带的 client;装 PGDG 最新版 pg_dump 保证兼容
+      - name: Install PostgreSQL client 17
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+            http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+
+      - name: Dump database
+        env:
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+        run: |
+          # -Fc 自定义格式,自带压缩,pg_restore 可选择性恢复
+          pg_dump "$DATABASE_URL" -Fc --no-owner -f backup.dump
+          ls -la backup.dump
+
+      - name: Upload to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_BACKUP_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_BACKUP_SECRET_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_BACKUP_ENDPOINT }}
+        run: |
+          STAMP=$(date -u +%F)
+          aws s3 cp backup.dump "s3://ezproperty-backups/daily/ezproperty-$STAMP.dump" \
+            --endpoint-url "$R2_ENDPOINT"
+          # 每月 1 日额外留一份长期月备
+          if [ "$(date -u +%d)" = "01" ]; then
+            aws s3 cp backup.dump "s3://ezproperty-backups/monthly/ezproperty-$STAMP.dump" \
+              --endpoint-url "$R2_ENDPOINT"
+          fi
+
+      - name: Verify upload
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_BACKUP_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_BACKUP_SECRET_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_BACKUP_ENDPOINT }}
+        run: |
+          aws s3 ls "s3://ezproperty-backups/daily/ezproperty-$(date -u +%F).dump" \
+            --endpoint-url "$R2_ENDPOINT"

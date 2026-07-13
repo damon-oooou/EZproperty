@@ -88,6 +88,49 @@
             <version>2.7.0</version>
         </dependency>
 
+        <!-- v0.6 阶段 D:auth 限流(内存实现,单实例够用,不引入 Redis) -->
+        <dependency>
+            <groupId>com.bucket4j</groupId>
+            <artifactId>bucket4j-core</artifactId>
+            <version>8.10.1</version>
+        </dependency>
+
+        <!-- v0.6 阶段 D:Sentry 错误监控。DSN 走环境变量 SENTRY_DSN,
+             为空则 SDK 自动禁用,dev 不受影响 -->
+        <dependency>
+            <groupId>io.sentry</groupId>
+            <artifactId>sentry-spring-boot-starter-jakarta</artifactId>
+            <version>7.18.1</version>
+        </dependency>
+
+        <!-- v0.6 阶段 A:照片 ingest 规格化管线 -->
+        <!-- 读取 EXIF(DateTimeOriginal / Orientation),在重编码前从原始字节读 -->
+        <dependency>
+            <groupId>com.drewnoakes</groupId>
+            <artifactId>metadata-extractor</artifactId>
+            <version>2.19.0</version>
+        </dependency>
+        <!-- 增强 ImageIO 的 JPEG 解码鲁棒性(CMYK JPEG、非标准文件),注册后 ImageIO.read 自动受益 -->
+        <dependency>
+            <groupId>com.twelvemonkeys.imageio</groupId>
+            <artifactId>imageio-jpeg</artifactId>
+            <version>3.12.0</version>
+        </dependency>
+        <!-- 缩放 + 按质量编码 JPEG(三档派生) -->
+        <dependency>
+            <groupId>net.coobird</groupId>
+            <artifactId>thumbnailator</artifactId>
+            <version>0.4.20</version>
+        </dependency>
+
+        <!-- v0.6 阶段 B:AWS SDK v2 S3 客户端,endpoint 指向 Cloudflare R2。
+             含 S3Presigner(presigned GET URL 是本地 HMAC 运算,无网络调用) -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+            <version>2.29.45</version>
+        </dependency>
+
         <!-- PostgreSQL -->
         <dependency>
             <groupId>org.postgresql</groupId>

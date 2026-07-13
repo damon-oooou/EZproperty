@@ -5,6 +5,7 @@ import com.propertymap.controller.dto.InspectionResponse;
 import com.propertymap.controller.dto.PhotoResponse;
 import com.propertymap.controller.dto.RoomWithPhotoCountResponse;
 import com.propertymap.service.InspectionService;
+import com.propertymap.service.PhotoUrlService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -19,6 +20,7 @@ import java.util.List;
 public class InspectionController {
 
     private final InspectionService inspectionService;
+    private final PhotoUrlService photoUrlService;
 
     @GetMapping("/properties/{propertyId}/inspections")
     public List<InspectionResponse> getInspections(@PathVariable Long propertyId) {
@@ -48,7 +50,7 @@ public class InspectionController {
     public List<PhotoResponse> getPhotos(@PathVariable Long inspectionId,
                                          @PathVariable Long roomId) {
         return inspectionService.getPhotosForRoom(inspectionId, roomId)
-                .stream().map(PhotoResponse::from).toList();
+                .stream().map(p -> PhotoResponse.from(p, photoUrlService.urlsFor(p))).toList();
     }
 
     @PostMapping("/inspections/{inspectionId}/rooms/{roomId}/photos")
@@ -57,7 +59,7 @@ public class InspectionController {
                                             @PathVariable Long roomId,
                                             @RequestParam("files") List<MultipartFile> files) throws IOException {
         return inspectionService.uploadPhotosToInspection(inspectionId, roomId, files)
-                .stream().map(PhotoResponse::from).toList();
+                .stream().map(p -> PhotoResponse.from(p, photoUrlService.urlsFor(p))).toList();
     }
 
     @DeleteMapping("/inspections/{inspectionId}/photos")

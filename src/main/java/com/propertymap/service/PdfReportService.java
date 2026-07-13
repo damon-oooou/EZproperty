@@ -9,6 +9,8 @@ import com.propertymap.model.Room;
 import com.propertymap.repository.InspectionPhotoRepository;
 import com.propertymap.repository.RoomRepository;
 import com.propertymap.security.TenantGuard;
+import com.propertymap.storage.PhotoKeys;
+import com.propertymap.storage.PhotoStorage;
 import com.openhtmltopdf.pdfboxout.PdfRendererBuilder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -17,20 +19,21 @@ import org.springframework.transaction.annotation.Transactional;
 import org.thymeleaf.TemplateEngine;
 import org.thymeleaf.context.Context;
 
-import javax.imageio.ImageIO;
-import java.awt.Color;
-import java.awt.Graphics2D;
-import java.awt.RenderingHints;
-import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.file.Paths;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 @Service
 @RequiredArgsConstructor
@@ -40,11 +43,22 @@ public class PdfReportService {
     private final RoomRepository roomRepository;
     private final InspectionPhotoRepository inspectionPhotoRepository;
     private final ReportService reportService;
+    private final PhotoStorage photoStorage;
     private final TenantGuard tenantGuard;
     private final TemplateEngine templateEngine; // Spring Boot 自动配置的 SpringTemplateEngine
 
-    private static final int MAX_PHOTO_WIDTH = 1200;
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("d MMMM yyyy");
+
+    /**
+     * v0.6 阶段 B:并行拉取照片字节的固定线程池(约 8 线程)。
+     * 大报告(数百张图)从 R2 逐张串行拉不可接受;dev 本地读也无害。
+     * daemon 线程,不阻塞 JVM 退出。
+     */
+    private static final ExecutorService PHOTO_LOAD_POOL = Executors.newFixedThreadPool(8, r -> {
+        Thread t = new Thread(r, "pdf-photo-load");
+        t.setDaemon(true);
+        return t;
+    });
 
     /** 生成结果:PDF 字节 + 建议文件名。 */
     public record GeneratedReport(byte[] content, String fileName) {}
@@ -101,7 +115,7 @@ public class PdfReportService {
 
         try (ByteArrayOutputStream os = new ByteArrayOutputStream()) {
             PdfRendererBuilder builder = new PdfRendererBuilder();
-            builder.useFastMode();
+            // useFastMode() 已废弃:io.github fork 里快速模式是唯一模式,无需再调
             builder.withHtmlContent(html, null); // 图片全是 data URI,不需要 baseUri
             builder.toStream(os);
             builder.run();
@@ -113,19 +127,38 @@ public class PdfReportService {
         }
     }
 
-    /** 按房间分组收集照片。读不了的照片(HEIC、文件丢失)跳过并打日志,不让整份报告失败。 */
+    /**
+     * 按房间分组收集照片。
+     * v0.6 阶段 B:照片字节经 PhotoStorage.load()(中间档 key)并行拉取,
+     * 之后按房间顺序组装。个别对象读不到时跳过并打日志,不让整份报告失败。
+     */
     private List<RoomPhotos> buildRoomPhotos(Long inspectionId, Long propertyId) {
-        List<RoomPhotos> result = new ArrayList<>();
-        for (Room room : roomRepository.findByPropertyIdOrderByPosition(propertyId)) {
+        List<Room> rooms = roomRepository.findByPropertyIdOrderByPosition(propertyId);
+
+        // 1. 收集全部 (room -> photos),并提交并行 load
+        Map<Long, List<Photo>> photosByRoom = new HashMap<>();
+        Map<Long, Future<byte[]>> loads = new HashMap<>();
+        for (Room room : rooms) {
             List<Photo> photos = inspectionPhotoRepository
                     .findPhotosByInspectionIdAndRoomId(inspectionId, room.getId());
-            List<PhotoView> views = new ArrayList<>();
+            photosByRoom.put(room.getId(), photos);
             for (Photo photo : photos) {
-                String dataUri = toDataUri(photo);
+                String mediumKey = PhotoKeys.medium(photo.getStorageKey());
+                loads.put(photo.getId(),
+                        PHOTO_LOAD_POOL.submit(() -> photoStorage.load(mediumKey)));
+            }
+        }
+
+        // 2. 按房间顺序组装(join 各 Future)
+        List<RoomPhotos> result = new ArrayList<>();
+        for (Room room : rooms) {
+            List<PhotoView> views = new ArrayList<>();
+            for (Photo photo : photosByRoom.get(room.getId())) {
+                String dataUri = toDataUri(photo, loads.get(photo.getId()));
                 if (dataUri == null) continue;
                 int n = views.size() + 1;
-                views.add(new PhotoView(dataUri,
-                        n == 1 ? room.getName() : room.getName() + " " + n));
+                String label = n == 1 ? room.getName() : room.getName() + " " + n;
+                views.add(new PhotoView(dataUri, label + " \u2014 " + dateCaption(photo)));
             }
             if (!views.isEmpty()) {
                 result.add(new RoomPhotos(room.getName(), views));
@@ -134,34 +167,35 @@ public class PdfReportService {
         return result;
     }
 
-    /** 读磁盘 -> 压到最大 1200px 宽 -> 重编码 JPEG -> base64 data URI。失败返回 null。 */
-    private String toDataUri(Photo photo) {
+    /**
+     * v0.6:嵌入源直接用规格化中间档(1600px q0.85),不再做运行时压缩 ——
+     * 管线保证所有照片必已摆正、必无 EXIF,这里只是取字节转 base64。
+     */
+    private String toDataUri(Photo photo, Future<byte[]> load) {
         try {
-            BufferedImage src = ImageIO.read(Paths.get(photo.getFilePath()).toFile());
-            if (src == null) {
-                log.warn("Unreadable image format, skipping photo {} ({})",
-                        photo.getId(), photo.getFilePath());
-                return null;
-            }
-            int w = src.getWidth();
-            int targetW = Math.min(w, MAX_PHOTO_WIDTH);
-            int targetH = (int) Math.round(src.getHeight() * (targetW / (double) w));
-
-            // 统一画到 RGB 画布上:兼顾缩放,以及 PNG 带透明通道时 JPEG 编码器会失败的问题
-            BufferedImage rgb = new BufferedImage(targetW, targetH, BufferedImage.TYPE_INT_RGB);
-            Graphics2D g = rgb.createGraphics();
-            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
-                    RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-            g.drawImage(src, 0, 0, targetW, targetH, Color.WHITE, null);
-            g.dispose();
-
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            ImageIO.write(rgb, "jpg", baos);
-            return "data:image/jpeg;base64," + Base64.getEncoder().encodeToString(baos.toByteArray());
-        } catch (IOException e) {
-            log.warn("Skipping photo {} ({}): {}", photo.getId(), photo.getFilePath(), e.getMessage());
+            byte[] bytes = load.get();
+            return "data:image/jpeg;base64," + Base64.getEncoder().encodeToString(bytes);
+        } catch (ExecutionException e) {
+            log.warn("Skipping photo {} ({}): {}", photo.getId(), photo.getStorageKey(),
+                    e.getCause() == null ? e.getMessage() : e.getCause().getMessage());
             return null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while loading report photos", e);
         }
+    }
+
+    /**
+     * 题注日期(与前端同一措辞规则):有 EXIF 拍摄时间显示 "Taken {日期}",
+     * 否则回退 "Uploaded {日期}"。禁止拿上传时间冒充拍摄时间(法律场景要求诚实区分)。
+     */
+    private String dateCaption(Photo photo) {
+        LocalDateTime takenAt = photo.getTakenAt();
+        if (takenAt != null) {
+            return "Taken " + DATE_FMT.format(takenAt.toLocalDate());
+        }
+        LocalDateTime uploadedAt = photo.getUploadedAt();
+        return uploadedAt == null ? "" : "Uploaded " + DATE_FMT.format(uploadedAt.toLocalDate());
     }
 
     private String buildFileName(String typeLabel, String address, LocalDate date) {
@@ -175,7 +209,7 @@ public class PdfReportService {
     }
 
     private String yesNo(Boolean b) {
-        return b == null ? "\u2014" : (b ? "Yes" : "No");
+        return b == null ? "—" : (b ? "Yes" : "No");
     }
 
     private String formatDate(LocalDate d) {

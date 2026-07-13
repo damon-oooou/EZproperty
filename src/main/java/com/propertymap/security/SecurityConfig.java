@@ -29,6 +29,9 @@ public class SecurityConfig {
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/api/auth/login", "/api/auth/register", "/api/auth/google").permitAll()
+                // v0.6:Spring Boot 的 /error 转发必须放行。否则任何未处理异常(500)
+                // 都会在 error dispatch 时被判为未认证而变成 401,前端误跳登录页。
+                .requestMatchers("/error").permitAll()
                 // 照片静态文件暂时公开:文件名含 UUID 不可枚举。
                 // 已知限制,计划在存储迁到 S3 时换成带签名的临时 URL。
                 .requestMatchers("/uploads/**").permitAll()

@@ -36,6 +36,13 @@ public class GlobalExceptionHandler {
         return Map.of("message", "Upload too large. Each photo must be 15MB or smaller.");
     }
 
+    /** v0.6:存储写入失败(磁盘/R2)统一 500 + 明确信息,避免落进默认 /error 流程。 */
+    @ExceptionHandler(java.io.IOException.class)
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+    public Map<String, String> handleIo(java.io.IOException e) {
+        return Map.of("message", "Failed to store photos. Please try again.");
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public Map<String, String> handleValidation(MethodArgumentNotValidException e) {
