@@ -28,7 +28,7 @@ aws s3 cp s3://ezproperty-backups/daily/ezproperty-<YYYY-MM-DD>.dump .\restore-t
 ### 2. 起一个干净的临时 PG（不碰 dev 库）
 
 ```powershell
-docker run -d --name pg-restore-drill -e POSTGRES_PASSWORD=drill -p 5544:5432 postgres:17
+docker run -d --name pg-restore-drill -e POSTGRES_PASSWORD=drill -p 5544:5432 postgres:18
 ```
 
 ### 3. 恢复
