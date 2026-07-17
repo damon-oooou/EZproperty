@@ -69,4 +69,4 @@ Remove-Item .\restore-test.dump
 
 | 日期 | 备份文件 | 结果 | 执行人 | 备注 |
 |---|---|---|---|---|
-| （首次演练后填写） | | | | |
+| 2026-07-14 | daily/ezproperty-2026-07-14.dump | ✅ 通过 | Damon | 首次演练。10 表齐全,Flyway v11,users=2/properties=1/photos=4,数据可读。本地 Docker postgres:18 恢复 |

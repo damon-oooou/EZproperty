@@ -10,8 +10,10 @@ import org.springframework.stereotype.Service;
 
 import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
+import javax.imageio.ImageReader;
 import javax.imageio.ImageWriteParam;
 import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageInputStream;
 import javax.imageio.stream.MemoryCacheImageOutputStream;
 import java.awt.Color;
 import java.awt.Graphics2D;
@@ -23,6 +25,7 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Date;
+import java.util.Iterator;
 import java.util.concurrent.Semaphore;
 
 /**
@@ -55,6 +58,13 @@ public class PhotoIngestService {
     private static final float QUALITY_MAIN = 0.85f;
     private static final float QUALITY_THUMBNAIL = 0.8f;
 
+    /**
+     * 像素数上限:6000 万像素。主流手机最高像素模式(48-50MP)全部放行,
+     * 全景图(通常 60MP+)与超大图拒收 —— 无上界的输入在有限内存下数学上不闭合,
+     * 这道闸不管容器内存多大都必须存在。60MP 峰值 ≈ 360MB,-Xmx700m 下安全。
+     */
+    private static final long MAX_PIXELS = 60_000_000L;
+
     /** 全局像素处理闸门:见类注释的内存纪律 */
     private static final Semaphore INGEST_GATE = new Semaphore(1);
 
@@ -71,6 +81,15 @@ public class PhotoIngestService {
     public IngestResult ingest(byte[] rawBytes, String fileName) throws IOException {
         // ---- 1. 重编码前读 EXIF ----
         ExifInfo exif = readExif(rawBytes, fileName);
+
+        // ---- 1.5 像素数闸门(只读文件头拿尺寸,不解码,在排队前就拒掉超大图) ----
+        long pixels = readPixelCount(rawBytes);
+        if (pixels > MAX_PIXELS) {
+            throw new IllegalArgumentException(
+                    "\"" + fileName + "\" is " + (pixels / 1_000_000) + " megapixels — photos over "
+                    + (MAX_PIXELS / 1_000_000) + "MP (such as panoramas) are not supported. "
+                    + "Please upload standard photos.");
+        }
 
         INGEST_GATE.acquireUninterruptibly();
         try {
@@ -105,6 +124,26 @@ public class PhotoIngestService {
             return new IngestResult(original, medium, thumbnail, exif.takenAt());
         } finally {
             INGEST_GATE.release();
+        }
+    }
+
+    /**
+     * 只读文件头获取宽高(不分配像素缓冲,开销可忽略)。
+     * 读不出尺寸时返回 0:放行给解码路径,由它给出"无法解码"的 400。
+     */
+    private long readPixelCount(byte[] rawBytes) {
+        try (ImageInputStream in = ImageIO.createImageInputStream(new ByteArrayInputStream(rawBytes))) {
+            Iterator<ImageReader> readers = ImageIO.getImageReaders(in);
+            if (!readers.hasNext()) return 0;
+            ImageReader reader = readers.next();
+            try {
+                reader.setInput(in);
+                return (long) reader.getWidth(0) * reader.getHeight(0);
+            } finally {
+                reader.dispose();
+            }
+        } catch (IOException e) {
+            return 0;
         }
     }
 
