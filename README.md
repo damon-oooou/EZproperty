@@ -2,6 +2,8 @@
 
 A cloud-based property inspection platform that enables property managers to build and maintain a persistent photo history for every property. Instead of recreating condition reports from scratch for each tenancy, managers reuse existing photos and update only what has changed — on the web today, with mobile on-site capture and AI-assisted reporting on the roadmap.
 
+**Live:** [app.ez-property.net](https://app.ez-property.net) (frontend on Vercel, API on Railway Singapore, photos on Cloudflare R2)
+
 ## The Problem
 
 Every time a tenancy ends and a new one begins, a property manager typically:
@@ -21,69 +23,58 @@ EZproperty maintains a long-lived **Property Photo Library**. Photos belong to t
 - Removing a photo from an inspection deletes only the reference; the file and its history remain intact for past inspections
 - The same inheritance applies to report content: room conditions and tenancy details carry over, while per-visit findings (urgent actions, comments) start blank
 
-## Current Status — v0.5.2
+## Current Status — v0.6
 
-**Upload hardening (v0.5.2)**
-- Format validation: only JPEG and PNG accepted — frontend `accept="image/jpeg,image/png"` plus client-side type check, backend verification by magic bytes (declared content-type not trusted); HEIC rejected with a clear conversion hint
-- Size limits set explicitly: 15MB per photo / 100MB per request (`max-file-size` / `max-request-size`) — bill protection once storage moves to the cloud; over-limit uploads get a clear message on both ends instead of a blank 500
-- Download PDF auto-saves: unsaved report changes are saved automatically before the PDF is generated, so the download always reflects the latest edits (if the save fails, no PDF is produced)
+**Photo ingest pipeline**
+- Every upload passes through a single normalisation pipeline: EXIF is read from the raw bytes first (`DateTimeOriginal` → stored as `taken_at`, `Orientation` → used to rotate/flip pixels, all 8 values implemented), then pixels are re-encoded — the stored files contain **no EXIF at all** (GPS and orientation tags never reach disk)
+- Three tiers per photo, derived by naming convention from one storage key: full-resolution original (q0.85), 1600px medium (lightbox / PDF embedding), 200px thumbnail (grids). Raw upload bytes are not retained — the "original" is the normalised artifact
+- PNG input is flattened onto white and converted to JPEG; CMYK and non-standard JPEGs decode via TwelveMonkeys
+- Memory-bounded by design: orientation fix and RGB normalisation happen in a single draw (two full-size buffers max, 3 bytes/px), pixel work is serialised through a semaphore, and photos over 60 megapixels (panoramas, stitched images) are rejected before decoding with a clear message
+- All three tiers must succeed or the upload rolls back — no orphan files, no orphan rows
+- Honest date labelling everywhere (UI and PDF captions): "Taken {date}" only when EXIF says so, otherwise "Uploaded {date}"
 
-**Google sign-in (v0.5.1)**
-- "Continue with Google" on the login and register pages (Google Identity Services); backend verifies the ID token signature/audience and issues the same app JWT as password login
-- First Google sign-in auto-registers (creates a single-member agency); an existing password account with the same email simply signs in — the email is already verified by Google
-- Configured via one OAuth Client ID used by both sides: `VITE_GOOGLE_CLIENT_ID` (frontend, `.env.local`) and `GOOGLE_CLIENT_ID` (backend env). Unset = the button is hidden and password login works as normal
+**Cloud storage & signed URLs**
+- `PhotoStorage` abstraction: local filesystem in dev, Cloudflare R2 (S3-compatible, AWS SDK v2) in prod — same storage keys on both
+- The production bucket is private; all photo access goes through presigned GET URLs (24h TTL) generated server-side. Real authorisation happens at the API layer (`TenantGuard`); the URL is just a short-lived pass. The old public `/uploads/**` mapping exists in dev only
+- PDF generation loads the 1600px tier through the storage abstraction with a fixed 8-thread pool — large reports no longer fetch photos serially
 
+**Cloud deployment**
+- Backend: multi-stage Dockerfile → Railway (Singapore) with Railway PostgreSQL; `DATABASE_URL` (postgres://) is mapped to Spring's JDBC form by an `EnvironmentPostProcessor`; Flyway migrates automatically on deploy
+- Frontend: Vercel (`frontend/` root, `vercel.json` SPA rewrite); API base URL and Google client ID injected via `VITE_*` env vars
+- Domains: `app.ez-property.net` → Vercel, `api.ez-property.net` → Railway; CORS origins are env-driven (`CORS_ALLOWED_ORIGINS`), so adding a domain is a config change, not a code change
+- All secrets live in platform env vars; the prod profile has no default credentials and fails fast if `JWT_SECRET` is missing
 
-**Multi-user & authentication (v0.5)**
-- Agency tenant model: users belong to an agency, properties belong to the agency; registration auto-creates a single-member agency, so solo use is unchanged and team sharing needs no future schema change
-- Open registration + JWT login (`/api/auth/register`, `/api/auth/login`, `/api/auth/me`); BCrypt password hashing; stateless Spring Security — the same token API will serve the future iOS app
-- Tenant isolation via a single `TenantGuard` entry point: every property/inspection load verifies agency ownership; foreign resources return 404 (existence not leaked)
-- Frontend: sign-in / create-account pages, protected routes with post-login redirect, automatic `Authorization` header, 401 → session cleared and redirected to login; PDF download switched to authenticated fetch + blob
-- Known limitation: `/uploads/**` photo files stay public (UUID filenames, not enumerable) — signed URLs planned with the S3 migration
-
-
-**Property & inspection management**
-- Google-style home page with instant autocomplete search and create-property flow
-- Property page with inspection list (ENTRY / ROUTINE / EXIT), inherit-from-previous option
-- Inspection page with Photos / Report tabs (tab state persisted in the URL)
-
-**Photo library**
-- Room coverage grid per inspection (photo counts, amber flags for unphotographed rooms)
-- Per-room photo upload, lightbox viewing, reference-based removal
-- Custom rooms added inline (property-level assets, visible across all inspections)
-
-**Condition report (NSW routine format)**
-- Room-level conditions: Satisfactory / Not satisfactory / Not inspected + comments, with a one-click "All satisfactory" shortcut
-- Report details: landlord, tenant, lease expiry, smoke alarms, tenant repairs, urgent action / general comments / tenant action boxes, agency info, editable disclaimer
-- Full inheritance: conditions and identity fields copy to the next inspection; per-visit action boxes intentionally start blank
-
-**PDF generation**
-- `GET /api/inspections/{id}/report` renders a downloadable A4 PDF (Thymeleaf template → openhtmltopdf)
-- Three sections: report header, room condition table, photos grouped by room (two-column grid, auto-captioned)
-- Photos downscaled to 1200px and embedded; page numbering in the footer
-- Own template and wording throughout — no reproduction of copyrighted industry forms; the agent disclaimer is a user-editable field
+**Production hardening**
+- Backups: nightly `pg_dump` via GitHub Actions → private R2 backup bucket (`daily/` kept 30 days by lifecycle rule, `monthly/` kept forever); restore procedure documented and drilled (`docs/restore-drill.md`) — an unverified backup is treated as no backup
+- Auth rate limiting (bucket4j, per client IP from `X-Forwarded-For`): login 10/min, register 5/hour → 429; login failures return a single uniform message either way (no email enumeration)
+- Monitoring: Sentry on both backend (spring starter) and frontend (`@sentry/react`), DSNs env-driven and disabled when unset; UptimeRobot probes `/actuator/health` every 5 minutes (only actuator endpoint exposed)
+- Unhandled 500s no longer masquerade as 401s (`/error` dispatch permitted) — errors surface honestly instead of logging users out
+- Secret audit of full git history completed: no real credentials ever committed (dev-only defaults exempted by design)
 
 ## Tech Stack
 
 | Layer      | Technology |
 |------------|------------|
 | Backend    | Java 17, Spring Boot 3.4, Spring MVC, JPA/Hibernate |
-| Database   | PostgreSQL (Docker Compose), Flyway migrations |
+| Database   | PostgreSQL (Docker Compose dev / Railway prod), Flyway migrations |
+| Storage    | Cloudflare R2 via AWS SDK v2 + presigned URLs (prod); local filesystem (dev) — one `PhotoStorage` abstraction |
+| Imaging    | metadata-extractor (EXIF), TwelveMonkeys (decode), Thumbnailator (scaling) |
 | PDF        | Thymeleaf, openhtmltopdf (io.github.openhtmltopdf fork) |
 | Frontend   | React, Vite, React Router, Tailwind CSS v4 |
-| Storage    | Local filesystem behind a service layer (S3-compatible migration path preserved) |
+| Deployment | Railway (API, Singapore) + Vercel (frontend) + Cloudflare (DNS/R2) |
+| Ops        | GitHub Actions backups, Sentry, UptimeRobot, bucket4j rate limiting |
 
-## How to Run
+## How to Run (dev)
 
 Prerequisites: Java 17, Maven, Node.js 18+, Docker Desktop.
 
-**1. Database** (PostgreSQL 15 in Docker, data persists in a named volume):
+**1. Database** (PostgreSQL in Docker, data persists in a named volume):
 
 ```bash
 docker compose up -d
 ```
 
-**2. Backend** (port 8080; Flyway migrations run automatically on startup):
+**2. Backend** (port 8080; Flyway migrations run automatically on startup; photos go to the local `uploads/` folder — no cloud credentials needed):
 
 ```bash
 mvn spring-boot:run
@@ -101,14 +92,14 @@ Open http://localhost:5173 — you'll land on the sign-in page. Create an accoun
 
 Optional configuration:
 - **Google sign-in** — see [Google Sign-in Setup](#google-sign-in-setup); without it the button is hidden and password login works as normal
-- **Production** — set a random `JWT_SECRET` env var (the yml default is dev-only) and add your domain to the CORS origins in `CorsConfig`
+- **Production profile** — `SPRING_PROFILES_ACTIVE=prod` switches storage to R2 and requires env vars: `JWT_SECRET`, `DATABASE_URL`, `R2_ENDPOINT` / `R2_ACCESS_KEY` / `R2_SECRET_KEY` / `R2_BUCKET`, `CORS_ALLOWED_ORIGINS`, optionally `GOOGLE_CLIENT_ID` and `SENTRY_DSN`
 
 ## API Overview
 
 ```
 Auth (v0.5)
-  POST      /api/auth/register                              open registration, auto-creates agency
-  POST      /api/auth/login                                 returns JWT (72h)
+  POST      /api/auth/register                              open registration, auto-creates agency (rate-limited)
+  POST      /api/auth/login                                 returns JWT (72h) (rate-limited)
   POST      /api/auth/google                                Google ID token -> app JWT (v0.5.1)
   GET       /api/auth/me                                    current user + agency
 
@@ -120,21 +111,21 @@ Properties
 
 Inspections
   GET       /api/inspections/{id}/rooms                     rooms + per-inspection photo counts
-  GET/POST  /api/inspections/{id}/rooms/{roomId}/photos
+  GET/POST  /api/inspections/{id}/rooms/{roomId}/photos     photo DTOs carry thumbnail/medium/original URLs (signed in prod)
   DELETE    /api/inspections/{id}/photos                    removes references only
 
 Reports (v0.4.1+)
   GET/PUT   /api/inspections/{id}/conditions                room conditions, batch upsert
   GET/PUT   /api/inspections/{id}/report-details
-  GET       /api/inspections/{id}/report                    PDF download (v0.4.2)
+  GET       /api/inspections/{id}/report                    PDF download (v0.4.2; embeds 1600px tier, dated captions)
 ```
 
-## Data Model (Flyway V1–V10)
+## Data Model (Flyway V1–V11)
 
 ```
 agencies ─< users                                           (v0.5, tenant boundary)
 agencies ─< properties
-properties ─< rooms ─< photos
+properties ─< rooms ─< photos                               (photos: storage_key + taken_at, v0.6)
 properties ─< inspections ─< inspection_photos >─ photos   (reference join, RESTRICT on photo)
 inspections ─< room_conditions                              (unique per inspection+room)
 inspections ─1 report_details                               (PK = inspection id)
@@ -151,24 +142,30 @@ inspections ─1 report_details                               (PK = inspection i
 - **v0.5** — Multi-user & authentication: agency tenant model (`agencies`, `users`, `properties.agency_id`), Spring Security + JWT (jjwt), open registration, tenant isolation via `TenantGuard`, login/register UI with protected routes
 - **v0.5.1** — Google sign-in: GIS button on login/register, `/api/auth/google` verifies the ID token and auto-registers first-time users; `users.auth_provider`, `password_hash` nullable
 - **v0.5.2** — Upload hardening: JPEG/PNG-only validation (frontend `accept` + backend magic bytes, HEIC rejected with a clear message), explicit size limits (15MB/photo, 100MB/request) with friendly errors, Download PDF auto-saves unsaved report changes first
+- **v0.6** — Production launch: photo ingest normalisation pipeline (EXIF orientation fix + strip, three JPEG tiers, `taken_at`, 60MP cap, V11), `PhotoStorage` abstraction with Cloudflare R2 + 24h presigned URLs (private bucket, `/uploads` dev-only), cloud deployment (Railway Singapore + Vercel + `ez-property.net`), hardening (nightly pg_dump backups to R2 with restore drill, bucket4j auth rate limiting, Sentry + UptimeRobot, git-history secret audit)
 
 ## Google Sign-in Setup
 
 1. [Google Cloud Console](https://console.cloud.google.com/) → create/select a project → **APIs & Services → Credentials → Create Credentials → OAuth client ID** (first time: configure the consent screen, External, only app name + email required)
-2. Application type **Web application**; add **Authorized JavaScript origins**: `http://localhost:5173` (and later your production domain). No redirect URI needed.
+2. Application type **Web application**; add **Authorized JavaScript origins**: `http://localhost:5173` (and your production domain). No redirect URI needed.
 3. Copy the Client ID into:
    - `frontend/.env.local` → `VITE_GOOGLE_CLIENT_ID=<client-id>`
    - backend env → `GOOGLE_CLIENT_ID=<client-id>` (or edit `application.yml`)
 
 ## Roadmap
 
+**Next (v0.7 direction)**
+- Refresh tokens (prerequisite for the iOS app)
+- iOS app v1: native camera + PHPicker batch import, camera pipeline fixed to JPEG (`AVCapturePhotoOutput`, quality prioritisation); server-side HEIC decoding deliberately not planned — HEIC uploads are rejected with a conversion hint
+- Report finalize/lock mechanism (high priority, planned separately)
+
 **Later**
 - Team collaboration: invite colleagues into an agency, roles/permissions (schema already supports it)
 - Email verification for password sign-ups (needs a mail provider — Resend / SES / SendGrid); Google accounts are already verified
-- Photo ingest normalisation at upload time: EXIF orientation fix, unified JPEG re-encode, thumbnail generation (also the answer to egress costs — thumbnails for browsing, originals on demand, PDFs generated in-region)
-- iOS camera/export pipeline fixed to JPEG (`AVCapturePhotoOutput`, quality prioritisation, original resolution); server-side HEIC decoding deliberately not planned — HEIC uploads are rejected with a conversion hint (v0.5.2)
-- iOS app v1: native camera + PHPicker batch import; v2: in-app guided capture per room
+- Photo library management: list & physically delete unreferenced photos (`PhotoStorage.delete()` and the RESTRICT constraint already make this safe); R2 object versioning once Cloudflare ships it
+- Client-side pre-compression for web uploads; per-photo upload progress
+- Cloudflare Turnstile on registration (trigger: spam sign-ups)
 - Per-agency report template customisation; Victorian (CAV) item-level template
 - Soft deletes; embedded PDF font for non-Latin comment text
-- Cloud storage selection notes: zero-egress providers (e.g. R2/B2) favoured; storage abstraction already in place
+- Privacy Policy / ToS (trigger: before first real-user data); revisit hosting region (AWS Sydney path kept open by the S3-compatible abstraction)
 - AI-assisted features (change detection, report drafting) — further out
