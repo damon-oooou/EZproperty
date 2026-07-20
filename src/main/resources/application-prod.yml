@@ -17,6 +17,11 @@ spring:
 
 server:
   port: ${PORT:8080}
+  # 1GB 容器内存配比:Tomcat 默认 200 工作线程的栈内存是纯浪费,
+  # 25 足够当前并发量,配合 -Xss512k 把线程栈开销压到 ~15MB
+  tomcat:
+    threads:
+      max: 25
 
 jwt:
   # 无默认值:prod 下必须显式提供,dev 默认密钥仅存在于 dev profile(application.yml)
