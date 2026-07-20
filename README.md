@@ -163,6 +163,10 @@ users ─< refresh_tokens                                     (v0.7, SHA-256 onl
 - iOS app v1: native camera + PHPicker batch import, camera pipeline fixed to JPEG (`AVCapturePhotoOutput`, quality prioritisation); server-side HEIC decoding deliberately not planned — HEIC uploads are rejected with a conversion hint
 - Report finalize/lock mechanism (high priority, planned separately)
 
+**AI-assisted features (exploratory)**
+- Daily inspection route optimisation: when a manager has many inspections booked for one day, compute the best visiting order from a start point, the inspection addresses, and an end point. Core is a classic routing problem (TSP/VRP with fixed start+end), solved via Google Routes API (`optimize:true`, ~25 waypoints) / Mapbox Optimization API / OR-Tools — not an LLM. First version: pure geographic ordering, no time windows. Later: add appointment time windows (entry/exit tenant slots) → VRP-with-time-windows, and an *optional* LLM layer to turn natural-language constraints ("back by 3pm", "CBD ones first", "this tenant is only home mornings") into structured constraints for the solver. Naturally lives in the iOS app (on-the-road use); needs address geocoding + Maps API billing awareness. Fits the mobile roadmap.
+- AI-assisted condition reporting: draft room condition comments from photos (already the platform's stated direction)
+
 **Later**
 - Team collaboration: invite colleagues into an agency, roles/permissions (schema already supports it)
 - Email verification for password sign-ups (needs a mail provider — Resend / SES / SendGrid); Google accounts are already verified
