@@ -18,6 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * v0.6 阶段 D:auth 端点限流(bucket4j 内存实现,按 IP)。
  *   POST /api/auth/login    每 IP 10 次/分钟
  *   POST /api/auth/register 每 IP  5 次/小时
+ *   POST /api/auth/refresh  每 IP 30 次/分钟(v0.7;/logout 不限流)
  * 超限返回 429 + JSON message。
  *
  * 真实客户端 IP:Railway 位于反向代理后,取 X-Forwarded-For 的第一跳;
@@ -31,9 +32,11 @@ public class AuthRateLimitFilter extends OncePerRequestFilter {
 
     private static final String LOGIN_PATH = "/api/auth/login";
     private static final String REGISTER_PATH = "/api/auth/register";
+    private static final String REFRESH_PATH = "/api/auth/refresh";
 
     private final Map<String, Bucket> loginBuckets = new ConcurrentHashMap<>();
     private final Map<String, Bucket> registerBuckets = new ConcurrentHashMap<>();
+    private final Map<String, Bucket> refreshBuckets = new ConcurrentHashMap<>();
 
     @Override
     protected void doFilterInternal(HttpServletRequest request,
@@ -48,6 +51,7 @@ public class AuthRateLimitFilter extends OncePerRequestFilter {
         Bucket bucket = switch (path) {
             case LOGIN_PATH -> loginBuckets.computeIfAbsent(clientIp(request), k -> newLoginBucket());
             case REGISTER_PATH -> registerBuckets.computeIfAbsent(clientIp(request), k -> newRegisterBucket());
+            case REFRESH_PATH -> refreshBuckets.computeIfAbsent(clientIp(request), k -> newRefreshBucket());
             default -> null;
         };
 
@@ -73,6 +77,13 @@ public class AuthRateLimitFilter extends OncePerRequestFilter {
     private Bucket newRegisterBucket() {
         return Bucket.builder()
                 .addLimit(limit -> limit.capacity(5).refillGreedy(5, Duration.ofHours(1)))
+                .build();
+    }
+
+    /** 30 次/分钟(v0.7:正常静默刷新频率远低于此,超限多半是脚本枚举) */
+    private Bucket newRefreshBucket() {
+        return Bucket.builder()
+                .addLimit(limit -> limit.capacity(30).refillGreedy(30, Duration.ofMinutes(1)))
                 .build();
     }
 

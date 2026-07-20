@@ -23,9 +23,9 @@ public class JwtService {
     private final Duration expiration;
 
     public JwtService(@Value("${jwt.secret}") String secret,
-                      @Value("${jwt.expiration-hours}") long expirationHours) {
+                      @Value("${jwt.access-expiration-minutes}") long accessExpirationMinutes) {
         this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
-        this.expiration = Duration.ofHours(expirationHours);
+        this.expiration = Duration.ofMinutes(accessExpirationMinutes);
     }
 
     public String generate(User user) {

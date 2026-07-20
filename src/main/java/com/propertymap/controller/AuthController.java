@@ -3,6 +3,8 @@ package com.propertymap.controller;
 import com.propertymap.controller.dto.AuthResponse;
 import com.propertymap.controller.dto.GoogleLoginRequest;
 import com.propertymap.controller.dto.LoginRequest;
+import com.propertymap.controller.dto.LogoutRequest;
+import com.propertymap.controller.dto.RefreshRequest;
 import com.propertymap.controller.dto.RegisterRequest;
 import com.propertymap.controller.dto.UserResponse;
 import com.propertymap.service.AuthService;
@@ -33,6 +35,19 @@ public class AuthController {
     @PostMapping("/google")
     public AuthResponse google(@Valid @RequestBody GoogleLoginRequest request) {
         return authService.googleLogin(request.idToken());
+    }
+
+    /** v0.7:refresh token 轮换换新 token 对。校验失败统一 401 "Invalid refresh token"。 */
+    @PostMapping("/refresh")
+    public AuthResponse refresh(@Valid @RequestBody RefreshRequest request) {
+        return authService.refresh(request.refreshToken());
+    }
+
+    /** v0.7:服务端真登出(撤销整条 refresh 链)。幂等,重复登出仍 204。 */
+    @PostMapping("/logout")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void logout(@Valid @RequestBody LogoutRequest request) {
+        authService.logout(request.refreshToken());
     }
 
     /** 需要有效 token(SecurityConfig 只放行了 login/register 两个路径)。 */

@@ -99,8 +99,10 @@ Optional configuration:
 ```
 Auth (v0.5)
   POST      /api/auth/register                              open registration, auto-creates agency (rate-limited)
-  POST      /api/auth/login                                 returns JWT (72h) (rate-limited)
-  POST      /api/auth/google                                Google ID token -> app JWT (v0.5.1)
+  POST      /api/auth/login                                 returns access (30m) + refresh token pair (rate-limited)
+  POST      /api/auth/google                                Google ID token -> app token pair (v0.5.1)
+  POST      /api/auth/refresh                               rotates refresh token, returns new pair (v0.7, rate-limited)
+  POST      /api/auth/logout                                revokes the refresh token family server-side (v0.7)
   GET       /api/auth/me                                    current user + agency
 
 Properties
@@ -120,7 +122,7 @@ Reports (v0.4.1+)
   GET       /api/inspections/{id}/report                    PDF download (v0.4.2; embeds 1600px tier, dated captions)
 ```
 
-## Data Model (Flyway V1–V11)
+## Data Model (Flyway V1–V12)
 
 ```
 agencies ─< users                                           (v0.5, tenant boundary)
@@ -129,6 +131,7 @@ properties ─< rooms ─< photos                               (photos: storage
 properties ─< inspections ─< inspection_photos >─ photos   (reference join, RESTRICT on photo)
 inspections ─< room_conditions                              (unique per inspection+room)
 inspections ─1 report_details                               (PK = inspection id)
+users ─< refresh_tokens                                     (v0.7, SHA-256 only, rotation family)
 ```
 
 ## Version History
@@ -143,6 +146,7 @@ inspections ─1 report_details                               (PK = inspection i
 - **v0.5.1** — Google sign-in: GIS button on login/register, `/api/auth/google` verifies the ID token and auto-registers first-time users; `users.auth_provider`, `password_hash` nullable
 - **v0.5.2** — Upload hardening: JPEG/PNG-only validation (frontend `accept` + backend magic bytes, HEIC rejected with a clear message), explicit size limits (15MB/photo, 100MB/request) with friendly errors, Download PDF auto-saves unsaved report changes first
 - **v0.6** — Production launch: photo ingest normalisation pipeline (EXIF orientation fix + strip, three JPEG tiers, `taken_at`, 60MP cap, V11), `PhotoStorage` abstraction with Cloudflare R2 + 24h presigned URLs (private bucket, `/uploads` dev-only), cloud deployment (Railway Singapore + Vercel + `ez-property.net`), hardening (nightly pg_dump backups to R2 with restore drill, bucket4j auth rate limiting, Sentry + UptimeRobot, git-history secret audit)
+- **v0.7 (Phase A)** — Refresh token system: 30-minute access tokens + DB-persisted refresh tokens (SHA-256 only, rotation with reuse detection, 30-day sliding expiry, `refresh_tokens` V12), `/api/auth/refresh` + `/api/auth/logout` (real server-side logout), web client silent refresh with single-flight retry on 401, daily purge of expired rows
 
 ## Google Sign-in Setup
 
@@ -155,7 +159,7 @@ inspections ─1 report_details                               (PK = inspection i
 ## Roadmap
 
 **Next (v0.7 direction)**
-- Refresh tokens (prerequisite for the iOS app)
+- ~~Refresh tokens (prerequisite for the iOS app)~~ — done in v0.7 Phase A
 - iOS app v1: native camera + PHPicker batch import, camera pipeline fixed to JPEG (`AVCapturePhotoOutput`, quality prioritisation); server-side HEIC decoding deliberately not planned — HEIC uploads are rejected with a conversion hint
 - Report finalize/lock mechanism (high priority, planned separately)
 

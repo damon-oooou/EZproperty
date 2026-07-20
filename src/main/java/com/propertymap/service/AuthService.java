@@ -28,6 +28,7 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final GoogleTokenVerifier googleTokenVerifier;
+    private final RefreshTokenService refreshTokenService;
 
     /** 开放注册:每个新用户自动获得一个自己的 agency(单人租户)。 */
     @Transactional
@@ -50,10 +51,11 @@ public class AuthService {
         user.setFullName(request.fullName().trim());
         userRepository.save(user);
 
-        return new AuthResponse(jwtService.generate(user), UserResponse.from(user));
+        return toAuthResponse(user);
     }
 
-    @Transactional(readOnly = true)
+    // v0.7:去掉 readOnly——签发 refresh token 要写 refresh_tokens 表
+    @Transactional
     public AuthResponse login(LoginRequest request) {
         // 找不到用户和密码错误返回同一个消息,不泄露"该邮箱是否已注册"。
         // passwordHash == null 的是纯 Google 账号,不能走密码登录。
@@ -62,7 +64,7 @@ public class AuthService {
                         && passwordEncoder.matches(request.password(), u.getPasswordHash()))
                 .orElseThrow(() -> new ResponseStatusException(
                         HttpStatus.UNAUTHORIZED, "Invalid email or password"));
-        return new AuthResponse(jwtService.generate(user), UserResponse.from(user));
+        return toAuthResponse(user);
     }
 
     /**
@@ -89,7 +91,30 @@ public class AuthService {
             return userRepository.save(created);
         });
 
-        return new AuthResponse(jwtService.generate(user), UserResponse.from(user));
+        return toAuthResponse(user);
+    }
+
+    /** v0.7:access 过期后用 refresh token 换新 token 对(轮换 + 滑动续期)。 */
+    public AuthResponse refresh(String refreshToken) {
+        RefreshTokenService.TokenPair pair = refreshTokenService.rotate(refreshToken);
+        // rotate 校验失败(不存在/过期/已撤销/复用)返回 null,统一转 401,不区分原因
+        if (pair == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid refresh token");
+        }
+        // 新 access 是我们刚签发的,parse 拿 userId 组装 user 信息,不引入额外返回类型
+        User user = userRepository.findById(jwtService.parse(pair.accessToken()).userId())
+                .orElseThrow(() -> new EntityNotFoundException("User not found"));
+        return new AuthResponse(pair.accessToken(), pair.refreshToken(), UserResponse.from(user));
+    }
+
+    /** v0.7:服务端真登出,撤销整条 refresh token 链。幂等,不抛错。 */
+    public void logout(String refreshToken) {
+        refreshTokenService.revoke(refreshToken);
+    }
+
+    private AuthResponse toAuthResponse(User user) {
+        RefreshTokenService.TokenPair pair = refreshTokenService.issue(user);
+        return new AuthResponse(pair.accessToken(), pair.refreshToken(), UserResponse.from(user));
     }
 
     @Transactional(readOnly = true)

@@ -6,12 +6,22 @@ export const API_ORIGIN =
 const BASE_URL = `${API_ORIGIN}/api`;
 
 // ===== v0.5: Auth(token 与用户信息存 localStorage,web/iOS 共用同一套 JWT API)=====
+// v0.7:双 token 体系。access 30 分钟,401 时用 refresh token 静默续期并重试。
 
-const TOKEN_KEY = 'ez_token';
+const ACCESS_KEY = 'ez_access';
+const REFRESH_KEY = 'ez_refresh';
 const USER_KEY = 'ez_user';
+const LEGACY_TOKEN_KEY = 'ez_token'; // v0.6 及以前的单 token 键,弃用
+
+// 模块加载时一次性迁移清理:旧 token 没有配对的 refresh,无法参与新体系,
+// 直接清掉让用户重新登录一次(当前用户仅 Damon 本人,已获批准)。
+if (localStorage.getItem(LEGACY_TOKEN_KEY)) {
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+}
 
 export function getToken() {
-  return localStorage.getItem(TOKEN_KEY);
+  return localStorage.getItem(ACCESS_KEY);
 }
 
 export function getStoredUser() {
@@ -23,32 +33,90 @@ export function getStoredUser() {
   }
 }
 
+// access 过期不代表未登录——只要还持有 refresh token 就能静默续期
 export function isLoggedIn() {
-  return !!getToken();
+  return !!localStorage.getItem(REFRESH_KEY);
 }
 
-function setAuth(token, user) {
-  localStorage.setItem(TOKEN_KEY, token);
+function setAuth(accessToken, refreshToken, user) {
+  localStorage.setItem(ACCESS_KEY, accessToken);
+  localStorage.setItem(REFRESH_KEY, refreshToken);
   localStorage.setItem(USER_KEY, JSON.stringify(user));
 }
 
-export function logout() {
-  localStorage.removeItem(TOKEN_KEY);
+function clearAuth() {
+  localStorage.removeItem(ACCESS_KEY);
+  localStorage.removeItem(REFRESH_KEY);
   localStorage.removeItem(USER_KEY);
 }
 
 /**
- * 所有受保护请求的统一出口:自动带 Authorization 头;
- * 401(token 过期/非法)时清掉本地凭证并跳登录页。
+ * v0.7:登出改为先通知服务端撤销整条 refresh 链,再清本地。
+ * 服务端调用失败静默忽略——断网时也必须能本地登出。
  */
-async function request(path, options = {}) {
+export async function logout() {
+  const refreshToken = localStorage.getItem(REFRESH_KEY);
+  if (refreshToken) {
+    try {
+      await fetch(`${BASE_URL}/auth/logout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken }),
+      });
+    } catch {
+      // 网络失败不阻断本地登出
+    }
+  }
+  clearAuth();
+}
+
+// v0.7 single-flight:并发多个 401 只触发一次 /auth/refresh,
+// 其余请求等同一个 Promise 的结果。
+let refreshPromise = null;
+
+function tryRefresh() {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
+    const refreshToken = localStorage.getItem(REFRESH_KEY);
+    if (!refreshToken) return false;
+    try {
+      const res = await fetch(`${BASE_URL}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken }),
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      // refresh token 轮换:新旧不能混用,两个键必须一起更新
+      localStorage.setItem(ACCESS_KEY, data.accessToken);
+      localStorage.setItem(REFRESH_KEY, data.refreshToken);
+      return true;
+    } catch {
+      return false;
+    }
+  })().finally(() => {
+    refreshPromise = null;
+  });
+  return refreshPromise;
+}
+
+/**
+ * 所有受保护请求的统一出口:自动带 Authorization 头。
+ * v0.7:401 先静默刷新再重试一次(页面无感知);
+ * 刷新失败或重试仍 401 才清凭证跳登录页。
+ */
+async function request(path, options = {}, isRetry = false) {
   const headers = { ...(options.headers || {}) };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
 
   const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
   if (res.status === 401) {
-    logout();
+    if (!isRetry && (await tryRefresh())) {
+      // FormData 可重复发送,上传请求同样适用重试
+      return request(path, options, true);
+    }
+    clearAuth();
     if (window.location.pathname !== '/login') {
       window.location.href = '/login';
     }
@@ -73,7 +141,7 @@ async function authCall(path, body) {
     throw new Error(data?.message || 'Something went wrong, please try again');
   }
   const data = await res.json();
-  setAuth(data.token, data.user);
+  setAuth(data.accessToken, data.refreshToken, data.user);
   return data.user;
 }
 

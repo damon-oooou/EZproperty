@@ -28,12 +28,14 @@ public class SecurityConfig {
             .cors(Customizer.withDefaults())
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/auth/login", "/api/auth/register", "/api/auth/google").permitAll()
+                // v0.7:refresh/logout 也放行——两者靠 refresh token 自证,
+                // access 已过期时也必须能刷新和登出
+                .requestMatchers("/api/auth/login", "/api/auth/register", "/api/auth/google",
+                        "/api/auth/refresh", "/api/auth/logout").permitAll()
                 // v0.6:Spring Boot 的 /error 转发必须放行。否则任何未处理异常(500)
                 // 都会在 error dispatch 时被判为未认证而变成 401,前端误跳登录页。
                 .requestMatchers("/error").permitAll()
-                // 照片静态文件暂时公开:文件名含 UUID 不可枚举。
-                // 已知限制,计划在存储迁到 S3 时换成带签名的临时 URL。
+                // dev-only:生产走 R2 私有桶 + presigned URL(v0.6),此映射仅本地开发使用
                 .requestMatchers("/uploads/**").permitAll()
                 .requestMatchers("/actuator/health").permitAll()
                 .anyRequest().authenticated())

@@ -5,8 +5,9 @@ function Layout({ breadcrumbs = [], children }) {
   const navigate = useNavigate();
   const user = getStoredUser();
 
-  function handleLogout() {
-    logout();
+  // v0.7:logout 改 async(先通知服务端撤销 refresh token),完成后再跳登录页
+  async function handleLogout() {
+    await logout();
     navigate('/login');
   }
 
