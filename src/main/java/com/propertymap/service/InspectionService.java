@@ -1,10 +1,13 @@
 package com.propertymap.service;
 
 import com.propertymap.controller.dto.RoomWithPhotoCountResponse;
+import com.propertymap.exception.ConflictException;
 import com.propertymap.model.*;
 import com.propertymap.repository.*;
 import com.propertymap.security.TenantGuard;
+import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -22,6 +25,7 @@ public class InspectionService {
 
     private final InspectionRepository inspectionRepository;
     private final InspectionPhotoRepository inspectionPhotoRepository;
+    private final PhotoRepository photoRepository;
     private final PhotoService photoService;
     private final RoomRepository roomRepository;
     private final RoomConditionRepository roomConditionRepository;
@@ -52,6 +56,8 @@ public class InspectionService {
             Long previousId = previous.get().getId();
 
             // 1. 照片引用(v0.2 的原有逻辑)
+            //    v0.8:复制的 join 行标 carried_forward = TRUE;confirmed_at / confirmed_by
+            //    保持 NULL —— "现场确认过"需要一个真实的用户动作,创建时间不是证据。
             List<InspectionPhoto> inheritedLinks =
                     inspectionPhotoRepository.findByInspectionId(previousId)
                             .stream()
@@ -59,6 +65,7 @@ public class InspectionService {
                                 InspectionPhoto copy = new InspectionPhoto();
                                 copy.setInspection(saved);
                                 copy.setPhoto(link.getPhoto());
+                                copy.setCarriedForward(true);
                                 return copy;
                             })
                             .toList();
@@ -103,11 +110,6 @@ public class InspectionService {
         return inspectionRepository.findByPropertyIdOrderByInspectionDateDescIdDesc(propertyId);
     }
 
-    public List<Photo> getPhotosForRoom(Long inspectionId, Long roomId) {
-        tenantGuard.inspection(inspectionId);
-        return inspectionPhotoRepository.findPhotosByInspectionIdAndRoomId(inspectionId, roomId);
-    }
-
     @Transactional
     public void removePhotosFromInspection(Long inspectionId, List<Long> photoIds) {
         tenantGuard.inspection(inspectionId); // v0.5:先验归属再删引用
@@ -137,7 +139,61 @@ public class InspectionService {
         InspectionPhoto link = new InspectionPhoto();
         link.setInspection(inspection);
         link.setPhoto(photo);
+        link.setCarriedForward(false); // 本次新增,不是沿用
         inspectionPhotoRepository.save(link);
+    }
+
+    /**
+     * v0.8:添加更新照片。新增一张照片记录它替换了 oldPhotoId,并在"当前" inspection 里
+     * 用新照片顶替旧照片的引用。
+     *
+     * 必须遵守:
+     *   1. 只删当前 inspection 与旧照片的 join 行,其他 inspection 一律不动
+     *   2. 旧照片的 Photo 记录与存储文件完全不动
+     *   3. 上传失败整个事务回滚,旧 join 行仍在,无孤儿文件(storePhoto 自带清理)
+     *   4. 不级联更新任何其他 inspection
+     */
+    @Transactional
+    public Photo updatePhoto(Long inspectionId, Long roomId, Long oldPhotoId,
+                             MultipartFile file, String note) throws IOException {
+        tenantGuard.inspection(inspectionId);
+
+        Photo oldPhoto = photoRepository.findById(oldPhotoId)
+                .orElseThrow(() -> new EntityNotFoundException("Photo not found: " + oldPhotoId));
+        if (!oldPhoto.getRoom().getId().equals(roomId)) {
+            throw new IllegalArgumentException("Photo does not belong to this room");
+        }
+
+        // 旧照片必须当前就在这次 inspection 里,否则这个动作没有意义。
+        // 这一步同时保证了 room 属于 inspection 的 property(能在 inspection 里就一定同 property)。
+        InspectionPhoto oldJoin = inspectionPhotoRepository
+                .findByInspectionIdAndPhotoId(inspectionId, oldPhotoId)
+                .orElseThrow(() -> new EntityNotFoundException(
+                        "Photo " + oldPhotoId + " is not part of inspection " + inspectionId));
+
+        // UNIQUE 约束会兜底,这里提前给出友好错误
+        if (photoRepository.existsByReplacesPhotoId(oldPhotoId)) {
+            throw new ConflictException("This photo has already been updated");
+        }
+
+        // 没有说明的替换半年后无法解读,History 会变成一堆无意义的箭头。API 层同样必填。
+        String normalizedNote = PhotoService.normalizeNote(note);
+        if (normalizedNote == null) {
+            throw new IllegalArgumentException("A note describing what changed is required");
+        }
+
+        Photo newPhoto;
+        try {
+            // 复用现有上传管线(EXIF 处理、三档 tier、taken_at);note 与 replaces 随 INSERT 一起写入
+            newPhoto = photoService.storePhoto(oldPhoto.getRoom(), file, normalizedNote, oldPhotoId);
+        } catch (DataIntegrityViolationException e) {
+            // 并发下两次更新同一张旧照片:第二个 INSERT 撞 uq_photos_replaces,文件已被 storePhoto 清理
+            throw new ConflictException("This photo has already been updated");
+        }
+
+        inspectionPhotoRepository.delete(oldJoin);
+        linkPhotoToInspection(oldJoin.getInspection(), newPhoto);
+        return newPhoto;
     }
 
     /**

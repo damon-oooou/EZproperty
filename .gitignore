@@ -5,6 +5,7 @@ target/
 # IDE
 .vscode/
 .idea/
+.claude/launch.json
 
 # OS
 .DS_Store

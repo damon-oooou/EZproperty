@@ -4,11 +4,14 @@ import com.propertymap.model.Photo;
 import com.propertymap.model.Room;
 import com.propertymap.repository.PhotoRepository;
 import com.propertymap.repository.RoomRepository;
+import com.propertymap.security.TenantGuard;
 import com.propertymap.storage.PhotoKeys;
 import com.propertymap.storage.PhotoStorage;
+import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -23,14 +26,55 @@ import java.util.UUID;
 @Slf4j
 public class PhotoService {
 
+    /** v0.8:note 上限,与 V13 的 VARCHAR(500) 一致。 */
+    public static final int NOTE_MAX_LENGTH = 500;
+
     private final PhotoRepository photoRepository;
     private final RoomRepository roomRepository;
     private final PhotoIngestService photoIngestService;
     private final PhotoStorage photoStorage;
+    private final TenantGuard tenantGuard;
 
     public Room getRoomOrThrow(Long roomId) {
         return roomRepository.findById(roomId)
             .orElseThrow(() -> new RuntimeException("Room not found: " + roomId));
+    }
+
+    /**
+     * v0.8:按 id 取照片并校验租户归属。TenantGuard 只守 property / inspection 两个入口,
+     * 照片级端点(PATCH note)没有这两个语境,这里走 photo → room → property 用同一个 check,
+     * 不属于当前 agency 同样 404(不泄露 id 存在)。
+     */
+    public Photo getPhotoForCurrentTenant(Long photoId) {
+        Photo photo = photoRepository.findById(photoId)
+                .orElseThrow(() -> new EntityNotFoundException("Photo not found: " + photoId));
+        tenantGuard.check(photo.getRoom().getProperty());
+        return photo;
+    }
+
+    /**
+     * v0.8:更新照片备注。备注是照片的属性,会影响所有引用该照片的 inspection 视图——
+     * 这是设计意图,已生成的 PDF 是独立文件不受影响。
+     * 空白一律存 NULL;超长 400。
+     */
+    @Transactional
+    public Photo updateNote(Long photoId, String note) {
+        Photo photo = getPhotoForCurrentTenant(photoId);
+        photo.setNote(normalizeNote(note));
+        return photoRepository.save(photo);
+    }
+
+    /** 去首尾空白,空 → null,超过 500 字 → IllegalArgumentException(400)。 */
+    public static String normalizeNote(String note) {
+        if (note == null) return null;
+        String trimmed = note.trim();
+        if (trimmed.isEmpty()) return null;
+        if (trimmed.length() > NOTE_MAX_LENGTH) {
+            throw new IllegalArgumentException(
+                    "Note is too long (" + trimmed.length() + " characters). "
+                    + "Notes must be " + NOTE_MAX_LENGTH + " characters or fewer.");
+        }
+        return trimmed;
     }
 
     /**
@@ -50,32 +94,61 @@ public class PhotoService {
         List<Photo> saved = new ArrayList<>();
         try {
             for (MultipartFile file : files) {
-                String name = file.getOriginalFilename() == null ? "photo" : file.getOriginalFilename();
-
-                PhotoIngestService.IngestResult result =
-                        photoIngestService.ingest(file.getBytes(), name);
-
-                String key = UUID.randomUUID() + ".jpg";
-                writtenMainKeys.add(key); // 先登记再写:写一半失败也能被清理
-                photoStorage.save(key, result.original(), "image/jpeg");
-                photoStorage.save(PhotoKeys.medium(key), result.medium(), "image/jpeg");
-                photoStorage.save(PhotoKeys.thumbnail(key), result.thumbnail(), "image/jpeg");
-
-                Photo photo = new Photo();
-                photo.setRoom(room);
-                photo.setFileName(name);
-                photo.setStorageKey(key);
-                photo.setFileSize((long) result.original().length);
-                photo.setTakenAt(result.takenAt());
-                saved.add(photoRepository.save(photo));
+                saved.add(storeOne(room, file, null, null, writtenMainKeys));
             }
             return saved;
         } catch (RuntimeException | IOException e) {
-            // PhotoStorage.delete 按主 key 一并清理三档变体,且尽力而为不抛出
-            for (String key : writtenMainKeys) {
-                photoStorage.delete(key);
-            }
+            cleanup(writtenMainKeys);
             throw e;
+        }
+    }
+
+    /**
+     * v0.8:单张上传,同时写入 note 与 replacesPhotoId(用于"添加更新照片")。
+     * note / replaces 在 INSERT 时一并写入,而不是入库后再 set:
+     * 这样 uq_photos_replaces 冲突会在 INSERT 处立刻抛出,走同一条"失败即清理三档文件"路径,
+     * 不会留下孤儿文件(若入库后再 UPDATE,冲突要到 flush 才爆,文件已经写好了)。
+     */
+    public Photo storePhoto(Room room, MultipartFile file, String note, Long replacesPhotoId)
+            throws IOException {
+        validateImage(file);
+        List<String> writtenMainKeys = new ArrayList<>();
+        try {
+            return storeOne(room, file, note, replacesPhotoId, writtenMainKeys);
+        } catch (RuntimeException | IOException e) {
+            cleanup(writtenMainKeys);
+            throw e;
+        }
+    }
+
+    private Photo storeOne(Room room, MultipartFile file, String note, Long replacesPhotoId,
+                           List<String> writtenMainKeys) throws IOException {
+        String name = file.getOriginalFilename() == null ? "photo" : file.getOriginalFilename();
+
+        PhotoIngestService.IngestResult result =
+                photoIngestService.ingest(file.getBytes(), name);
+
+        String key = UUID.randomUUID() + ".jpg";
+        writtenMainKeys.add(key); // 先登记再写:写一半失败也能被清理
+        photoStorage.save(key, result.original(), "image/jpeg");
+        photoStorage.save(PhotoKeys.medium(key), result.medium(), "image/jpeg");
+        photoStorage.save(PhotoKeys.thumbnail(key), result.thumbnail(), "image/jpeg");
+
+        Photo photo = new Photo();
+        photo.setRoom(room);
+        photo.setFileName(name);
+        photo.setStorageKey(key);
+        photo.setFileSize((long) result.original().length);
+        photo.setTakenAt(result.takenAt());
+        photo.setNote(note);
+        photo.setReplacesPhotoId(replacesPhotoId);
+        return photoRepository.save(photo); // IDENTITY 主键:此处立即 INSERT
+    }
+
+    /** PhotoStorage.delete 按主 key 一并清理三档变体,且尽力而为不抛出 */
+    private void cleanup(List<String> writtenMainKeys) {
+        for (String key : writtenMainKeys) {
+            photoStorage.delete(key);
         }
     }
 

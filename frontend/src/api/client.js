@@ -238,6 +238,44 @@ export async function deleteInspectionPhotos(inspectionId, photoIds) {
   });
 }
 
+// ===== v0.8: Photo notes, updated photos, room history =====
+
+// 非 2xx 时把后端的 message 透传成 Error,供页面直接显示
+async function jsonOrThrow(res, fallback) {
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.message || fallback);
+  }
+  return res.json();
+}
+
+// note 是照片的属性,会影响所有引用该照片的 inspection;空字符串 = 清空
+export async function updatePhotoNote(photoId, note) {
+  const res = await request(`/photos/${photoId}/note`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note }),
+  });
+  return jsonOrThrow(res, 'Failed to save note, please try again');
+}
+
+// 新照片替换 oldPhotoId 在当前 inspection 里的位置;旧照片留在历史 inspection 里。note 必填。
+export async function addUpdatedPhoto(inspectionId, roomId, oldPhotoId, file, note) {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('note', note);
+  const res = await request(
+    `/inspections/${inspectionId}/rooms/${roomId}/photos/${oldPhotoId}/update`,
+    { method: 'POST', body: formData }
+  );
+  return jsonOrThrow(res, 'Upload failed, please try again');
+}
+
+// { updated: [{oldPhoto,newPhoto,note}], newlyCaptured: [...], carriedForward: {count, photos, origins} }
+export async function getRoomHistory(inspectionId, roomId) {
+  return requestJson(`/inspections/${inspectionId}/rooms/${roomId}/history`);
+}
+
 // ===== Condition report =====
 
 // 全房间列表 + 已填的 condition,未填的 satisfactory/comments 为 null(服务端合并)

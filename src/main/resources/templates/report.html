@@ -46,6 +46,10 @@
                       margin: 0 2% 10px 0; page-break-inside: avoid; }
         .photo-cell img { width: 100%; border: 1px solid #ccc; }
         .photo-caption { font-size: 9px; color: #444; margin-top: 2px; }
+        /* v0.8:照片备注。允许换行(word-wrap 防长串撑破 47% 列),不截断——
+           报告是证据文件,截掉说明文字比多占几行更糟。单元格已 page-break-inside: avoid。 */
+        .photo-note { font-size: 9px; color: #1a1a1a; margin-top: 2px;
+                      white-space: pre-wrap; word-wrap: break-word; }
 
         .sig-row { margin-top: 26px; width: 100%; }
         .sig-line { display: inline-block; width: 55%; border-top: 1px solid #1a1a1a;
@@ -142,6 +146,7 @@
                 <div class="photo-cell" th:each="p : ${rp.photos}">
                     <img th:src="${p.dataUri}"/>
                     <div class="photo-caption" th:text="${p.caption}"></div>
+                    <div class="photo-note" th:if="${p.note != null}" th:text="${p.note}"></div>
                 </div>
             </div>
         </div>

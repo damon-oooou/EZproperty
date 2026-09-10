@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import {
   getProperty,
   getInspectionRooms,
@@ -7,28 +7,13 @@ import {
   getInspectionPhotos,
   uploadInspectionPhotos,
   deleteInspectionPhotos,
-  API_ORIGIN,
+  getRoomHistory,
 } from '../api/client';
 import Layout from '../components/Layout';
-
-// v0.6:后端返回三档 URL。阶段 A(本地)是 /uploads/... 相对路径,需要拼 API origin;
-// 阶段 B 起 prod 返回 R2 presigned 绝对 URL,原样使用。
-function photoSrc(url) {
-  return url.startsWith('http') ? url : `${API_ORIGIN}${url}`;
-}
-
-// v0.6:照片时间措辞规则 —— takenAt 非空显示 "Taken {日期}"(EXIF 拍摄时间),
-// 为空回退 "Uploaded {日期}"。禁止拿上传时间冒充拍摄时间。
-function photoDateLabel(photo) {
-  if (photo.takenAt) return `Taken ${formatDate(photo.takenAt)}`;
-  if (photo.uploadedAt) return `Uploaded ${formatDate(photo.uploadedAt)}`;
-  return '';
-}
-
-function formatDate(isoDateTime) {
-  const d = new Date(isoDateTime);
-  return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
-}
+import PhotoLightbox from '../components/PhotoLightbox';
+import UpdatePhotoDialog from '../components/UpdatePhotoDialog';
+import RoomHistoryPanel from '../components/RoomHistoryPanel';
+import { photoSrc } from '../utils/photo';
 
 function RoomPage() {
   const { propertyId, inspectionId, roomId } = useParams();
@@ -42,13 +27,33 @@ function RoomPage() {
   const [uploadError, setUploadError] = useState(null);
   const [removing, setRemoving] = useState(false);
 
+  // v0.8:Current / History tab 放 URL,刷新不丢(与 InspectionPage 同一做法)
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = searchParams.get('tab') === 'history' ? 'history' : 'current';
+  function switchTab(next) {
+    setSearchParams(next === 'current' ? {} : { tab: next }, { replace: true });
+  }
+
+  // v0.8:History 面板数据(切到 History 时加载;照片有变动时重新拉)
+  const [history, setHistory] = useState(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState(null);
+
+  // v0.8:Add updated photo 对话框
+  const [updateTarget, setUpdateTarget] = useState(null);
+
   useEffect(() => {
     loadContext();
   }, [propertyId, inspectionId, roomId]);
 
   useEffect(() => {
     loadPhotos();
+    setHistory(null);
   }, [inspectionId, roomId]);
+
+  useEffect(() => {
+    if (tab === 'history' && !history) loadHistory();
+  }, [tab, history, inspectionId, roomId]);
 
   async function loadContext() {
     const [propertyData, roomsData, inspectionsData] = await Promise.all([
@@ -68,6 +73,24 @@ function RoomPage() {
     setPhotos(data);
   }
 
+  async function loadHistory() {
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      setHistory(await getRoomHistory(inspectionId, roomId));
+    } catch (err) {
+      setHistoryError(err.message || 'Failed to load history');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  // 照片集合变动后:重拉网格;History 若已加载则失效,下次显示时重拉
+  async function refreshAfterChange() {
+    await loadPhotos();
+    setHistory(null);
+  }
+
   function toggleSelect(photoId) {
     setSelectedIds((prev) =>
       prev.includes(photoId)
@@ -82,7 +105,7 @@ function RoomPage() {
     try {
       await deleteInspectionPhotos(inspectionId, selectedIds);
       setSelectedIds([]);
-      await loadPhotos();
+      await refreshAfterChange();
     } finally {
       setRemoving(false);
     }
@@ -124,7 +147,7 @@ function RoomPage() {
     setUploading(true);
     try {
       await uploadInspectionPhotos(inspectionId, roomId, files);
-      await loadPhotos();
+      await refreshAfterChange();
     } catch (err) {
       setUploadError(err.message || 'Upload failed, please try again');
     } finally {
@@ -134,25 +157,101 @@ function RoomPage() {
     }
   }
 
-  // Lightbox 键盘:Esc 关闭,左右键翻页
-  const handleLightboxKeys = useCallback(
-    (e) => {
-      if (e.key === 'Escape') setLightboxIndex(-1);
-      else if (e.key === 'ArrowRight')
-        setLightboxIndex((i) => Math.min(i + 1, photos.length - 1));
-      else if (e.key === 'ArrowLeft')
-        setLightboxIndex((i) => Math.max(i - 1, 0));
+  // v0.8:lightbox 里改了 note,就地更新网格数据,不关闭 lightbox
+  function handlePhotoChange(updated) {
+    setPhotos((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+    setHistory(null); // note 也出现在 History 的 Updated 卡片里
+  }
+
+  // v0.8:仅在恰好选中一张时可用
+  const singleSelected =
+    selectedIds.length === 1 ? photos.find((p) => p.id === selectedIds[0]) : null;
+
+  async function handleUpdated() {
+    setUpdateTarget(null);
+    setSelectedIds([]);
+    await refreshAfterChange();
+  }
+
+  const openPhotoById = useCallback(
+    (photoId) => {
+      const i = photos.findIndex((p) => p.id === photoId);
+      if (i >= 0) setLightboxIndex(i);
     },
-    [photos.length]
+    [photos]
   );
 
-  useEffect(() => {
-    if (lightboxIndex < 0) return;
-    document.addEventListener('keydown', handleLightboxKeys);
-    return () => document.removeEventListener('keydown', handleLightboxKeys);
-  }, [lightboxIndex, handleLightboxKeys]);
+  const closeLightbox = useCallback(() => setLightboxIndex(-1), []);
 
-  const lightboxPhoto = lightboxIndex >= 0 ? photos[lightboxIndex] : null;
+  const tabCls = (active) =>
+    `px-1 pb-2 text-sm font-medium border-b-2 transition-colors ${
+      active
+        ? 'border-teal-700 text-teal-800'
+        : 'border-transparent text-slate-400 hover:text-slate-600'
+    }`;
+
+  const grid = photos.length === 0 ? (
+    <div className="border border-dashed border-slate-300 rounded-2xl p-12 text-center text-slate-400">
+      No photos for this room in this inspection.
+      <br />
+      <span className="text-sm">Upload photos to get started.</span>
+    </div>
+  ) : (
+    <div
+      className={`grid grid-cols-2 sm:grid-cols-3 gap-3 ${
+        tab === 'history' ? 'md:grid-cols-3 lg:grid-cols-4' : 'md:grid-cols-4 lg:grid-cols-5'
+      }`}
+    >
+      {photos.map((photo, i) => {
+        const selected = selectedIds.includes(photo.id);
+        return (
+          <div
+            key={photo.id}
+            className={`relative group rounded-xl overflow-hidden cursor-pointer
+                        ${selected ? 'ring-2 ring-teal-600' : ''}`}
+            onClick={() => setLightboxIndex(i)}
+          >
+            <img
+              src={photoSrc(photo.thumbnailUrl)}
+              alt={photo.fileName}
+              className="w-full aspect-square object-cover"
+            />
+            {/* 选择圆圈:阻止冒泡,不触发 lightbox */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleSelect(photo.id);
+              }}
+              className={`absolute top-2 left-2 w-6 h-6 rounded-full border-2 flex
+                          items-center justify-center transition-colors
+                          ${selected
+                            ? 'bg-teal-600 border-teal-600'
+                            : 'bg-slate-900/30 border-white/80 hover:bg-slate-900/50'
+                          }`}
+              title={selected ? 'Deselect' : 'Select'}
+            >
+              {selected && (
+                <svg className="w-3.5 h-3.5 text-white" fill="none"
+                     viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+            </button>
+            {/* v0.8:有 note 的照片角标 */}
+            {photo.note && (
+              <span
+                className="absolute bottom-2 right-2 rounded-md bg-slate-900/70 px-1.5 py-0.5
+                           text-[10px] font-medium text-white"
+                title={photo.note}
+              >
+                Note
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 
   return (
     <Layout
@@ -168,7 +267,7 @@ function RoomPage() {
       ]}
     >
       {/* 页头 + 操作区 */}
-      <div className="mb-6 flex items-center gap-3 flex-wrap">
+      <div className="mb-4 flex items-center gap-3 flex-wrap">
         <h1 className="text-2xl font-semibold text-slate-900">
           {room?.name ?? 'Room'}
         </h1>
@@ -177,6 +276,16 @@ function RoomPage() {
         </span>
 
         <div className="ml-auto flex items-center gap-3">
+          {singleSelected && (
+            <button
+              onClick={() => setUpdateTarget(singleSelected)}
+              disabled={removing}
+              className="h-10 px-4 rounded-lg border border-teal-700 text-teal-800
+                         font-medium hover:bg-teal-50 disabled:opacity-50"
+            >
+              Add updated photo
+            </button>
+          )}
           {selectedIds.length > 0 && (
             <button
               onClick={handleRemove}
@@ -207,6 +316,16 @@ function RoomPage() {
         </div>
       </div>
 
+      {/* v0.8:Current / History tab */}
+      <div className="mb-6 flex gap-6 border-b border-slate-200">
+        <button onClick={() => switchTab('current')} className={tabCls(tab === 'current')}>
+          Current
+        </button>
+        <button onClick={() => switchTab('history')} className={tabCls(tab === 'history')}>
+          History
+        </button>
+      </div>
+
       {/* v0.5.2:上传错误提示(格式 / 大小) */}
       {uploadError && (
         <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -221,107 +340,43 @@ function RoomPage() {
         </div>
       )}
 
-      {/* 照片网格(v0.6:缩略图档)/ 空状态 */}
-      {photos.length === 0 ? (
-        <div className="border border-dashed border-slate-300 rounded-2xl p-12 text-center text-slate-400">
-          No photos for this room in this inspection.
-          <br />
-          <span className="text-sm">Upload photos to get started.</span>
-        </div>
+      {/* 照片网格(v0.6:缩略图档)。History tab 时右侧出现面板;窄屏堆到网格下方 */}
+      {tab === 'current' ? (
+        grid
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-          {photos.map((photo, i) => {
-            const selected = selectedIds.includes(photo.id);
-            return (
-              <div
-                key={photo.id}
-                className={`relative group rounded-xl overflow-hidden cursor-pointer
-                            ${selected ? 'ring-2 ring-teal-600' : ''}`}
-                onClick={() => setLightboxIndex(i)}
-              >
-                <img
-                  src={photoSrc(photo.thumbnailUrl)}
-                  alt={photo.fileName}
-                  className="w-full aspect-square object-cover"
-                />
-                {/* 选择圆圈:阻止冒泡,不触发 lightbox */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleSelect(photo.id);
-                  }}
-                  className={`absolute top-2 left-2 w-6 h-6 rounded-full border-2 flex
-                              items-center justify-center transition-colors
-                              ${selected
-                                ? 'bg-teal-600 border-teal-600'
-                                : 'bg-slate-900/30 border-white/80 hover:bg-slate-900/50'
-                              }`}
-                  title={selected ? 'Deselect' : 'Select'}
-                >
-                  {selected && (
-                    <svg className="w-3.5 h-3.5 text-white" fill="none"
-                         viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                  )}
-                </button>
-              </div>
-            );
-          })}
+        <div className="flex flex-col md:flex-row gap-6">
+          <div className="min-w-0 flex-1">{grid}</div>
+          <aside className="w-full md:w-[272px] md:shrink-0 md:border-l md:border-slate-200 md:pl-6">
+            <RoomHistoryPanel
+              history={history}
+              loading={historyLoading}
+              error={historyError}
+              onOpenPhoto={openPhotoById}
+            />
+          </aside>
         </div>
       )}
 
-      {/* Lightbox(v0.6:中间档 + 查看原图入口 + 拍摄/上传日期) */}
-      {lightboxPhoto && (
-        <div
-          className="fixed inset-0 bg-slate-900/90 z-30 flex flex-col items-center justify-center px-6"
-          onClick={() => setLightboxIndex(-1)}
-        >
-          <img
-            src={photoSrc(lightboxPhoto.mediumUrl)}
-            alt={lightboxPhoto.fileName}
-            className="max-h-[78vh] max-w-[92vw] object-contain rounded-lg"
-            onClick={(e) => e.stopPropagation()}
-          />
-          <div className="mt-3 text-slate-300 text-sm" onClick={(e) => e.stopPropagation()}>
-            {photoDateLabel(lightboxPhoto)}
-          </div>
-          <div className="mt-2 text-slate-300 text-sm flex items-center gap-4">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setLightboxIndex((i) => Math.max(i - 1, 0));
-              }}
-              disabled={lightboxIndex === 0}
-              className="px-3 py-1 rounded hover:bg-white/10 disabled:opacity-30"
-            >
-              ← Prev
-            </button>
-            <span>
-              {lightboxIndex + 1} / {photos.length} · {lightboxPhoto.fileName}
-            </span>
-            <a
-              href={photoSrc(lightboxPhoto.originalUrl)}
-              target="_blank"
-              rel="noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              className="px-3 py-1 rounded underline hover:bg-white/10"
-              title="Open the full-resolution image in a new tab"
-            >
-              View original ↗
-            </a>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setLightboxIndex((i) => Math.min(i + 1, photos.length - 1));
-              }}
-              disabled={lightboxIndex === photos.length - 1}
-              className="px-3 py-1 rounded hover:bg-white/10 disabled:opacity-30"
-            >
-              Next →
-            </button>
-          </div>
-        </div>
+      {/* Lightbox(v0.6:中间档 + 查看原图入口 + 拍摄/上传日期;v0.8:note 编辑) */}
+      {lightboxIndex >= 0 && photos[lightboxIndex] && (
+        <PhotoLightbox
+          photos={photos}
+          index={lightboxIndex}
+          onIndexChange={setLightboxIndex}
+          onClose={closeLightbox}
+          onPhotoChange={handlePhotoChange}
+        />
+      )}
+
+      {/* v0.8:Add updated photo */}
+      {updateTarget && (
+        <UpdatePhotoDialog
+          inspectionId={inspectionId}
+          roomId={roomId}
+          oldPhoto={updateTarget}
+          onClose={() => setUpdateTarget(null)}
+          onDone={handleUpdated}
+        />
       )}
     </Layout>
   );

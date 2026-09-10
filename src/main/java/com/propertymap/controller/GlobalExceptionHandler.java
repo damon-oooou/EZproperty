@@ -1,5 +1,6 @@
 package com.propertymap.controller;
 
+import com.propertymap.exception.ConflictException;
 import jakarta.persistence.EntityNotFoundException;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -26,6 +27,13 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public Map<String, String> handleBadRequest(IllegalArgumentException e) {
+        return Map.of("message", e.getMessage());
+    }
+
+    /** v0.8:状态冲突(如"这张照片已被更新过")→ 409。 */
+    @ExceptionHandler(ConflictException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    public Map<String, String> handleConflict(ConflictException e) {
         return Map.of("message", e.getMessage());
     }
 

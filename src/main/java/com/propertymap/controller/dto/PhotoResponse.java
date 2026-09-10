@@ -11,15 +11,30 @@ import java.time.LocalDateTime;
  *
  * takenAt = EXIF 拍摄时间,可 NULL。展示规则:非空显示 "Taken {日期}",
  * 为空回退 uploadedAt 显示 "Uploaded {日期}" —— 禁止拿上传时间冒充拍摄时间。
+ *
+ * v0.8 新增:
+ *   note / replacesPhotoId  照片自身的属性
+ *   carriedForward          该照片在"当前 inspection"里的引用是否为沿用;
+ *                           不在 inspection 语境下(如 PATCH note 的返回)为 null
+ *   origin                  最早引用这张照片的 inspection;同上,无语境时为 null
  */
 public record PhotoResponse(Long id, String fileName, Long fileSize,
                             LocalDateTime uploadedAt, LocalDateTime takenAt,
-                            String thumbnailUrl, String mediumUrl, String originalUrl) {
+                            String thumbnailUrl, String mediumUrl, String originalUrl,
+                            String note, Long replacesPhotoId,
+                            Boolean carriedForward, PhotoOrigin origin) {
 
     public static PhotoResponse from(Photo photo, PhotoUrlService.PhotoUrls urls) {
+        return from(photo, urls, null, null);
+    }
+
+    public static PhotoResponse from(Photo photo, PhotoUrlService.PhotoUrls urls,
+                                     Boolean carriedForward, PhotoOrigin origin) {
         return new PhotoResponse(
                 photo.getId(), photo.getFileName(), photo.getFileSize(),
                 photo.getUploadedAt(), photo.getTakenAt(),
-                urls.thumbnailUrl(), urls.mediumUrl(), urls.originalUrl());
+                urls.thumbnailUrl(), urls.mediumUrl(), urls.originalUrl(),
+                photo.getNote(), photo.getReplacesPhotoId(),
+                carriedForward, origin);
     }
 }

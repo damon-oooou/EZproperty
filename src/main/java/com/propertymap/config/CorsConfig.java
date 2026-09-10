@@ -28,7 +28,8 @@ public class CorsConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
         config.setAllowedOrigins(allowedOrigins);
-        config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        // v0.8:PATCH 用于照片备注(/api/photos/{id}/note),缺了它预检直接 403
+        config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         // 前端要从下载响应里读文件名
         config.setExposedHeaders(List.of("Content-Disposition"));

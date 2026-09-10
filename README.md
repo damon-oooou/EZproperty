@@ -115,6 +115,12 @@ Inspections
   GET       /api/inspections/{id}/rooms                     rooms + per-inspection photo counts
   GET/POST  /api/inspections/{id}/rooms/{roomId}/photos     photo DTOs carry thumbnail/medium/original URLs (signed in prod)
   DELETE    /api/inspections/{id}/photos                    removes references only
+  GET       /api/inspections/{id}/rooms/{roomId}/history    v0.8: updated / newly captured / carried forward groups
+  POST      /api/inspections/{id}/rooms/{roomId}/photos/{oldPhotoId}/update
+                                                            v0.8: add an updated photo (multipart file + required note)
+
+Photos (v0.8)
+  PATCH     /api/photos/{id}/note                           set / clear a photo note (<= 500 chars)
 
 Reports (v0.4.1+)
   GET/PUT   /api/inspections/{id}/conditions                room conditions, batch upsert
@@ -122,13 +128,14 @@ Reports (v0.4.1+)
   GET       /api/inspections/{id}/report                    PDF download (v0.4.2; embeds 1600px tier, dated captions)
 ```
 
-## Data Model (Flyway V1–V12)
+## Data Model (Flyway V1–V13)
 
 ```
 agencies ─< users                                           (v0.5, tenant boundary)
 agencies ─< properties
 properties ─< rooms ─< photos                               (photos: storage_key + taken_at, v0.6)
 properties ─< inspections ─< inspection_photos >─ photos   (reference join, RESTRICT on photo)
+                              (carried_forward, confirmed_at/by)  (note, replaces_photo_id UNIQUE → photos)   v0.8
 inspections ─< room_conditions                              (unique per inspection+room)
 inspections ─1 report_details                               (PK = inspection id)
 users ─< refresh_tokens                                     (v0.7, SHA-256 only, rotation family)
@@ -147,6 +154,7 @@ users ─< refresh_tokens                                     (v0.7, SHA-256 onl
 - **v0.5.2** — Upload hardening: JPEG/PNG-only validation (frontend `accept` + backend magic bytes, HEIC rejected with a clear message), explicit size limits (15MB/photo, 100MB/request) with friendly errors, Download PDF auto-saves unsaved report changes first
 - **v0.6** — Production launch: photo ingest normalisation pipeline (EXIF orientation fix + strip, three JPEG tiers, `taken_at`, 60MP cap, V11), `PhotoStorage` abstraction with Cloudflare R2 + 24h presigned URLs (private bucket, `/uploads` dev-only), cloud deployment (Railway Singapore + Vercel + `ez-property.net`), hardening (nightly pg_dump backups to R2 with restore drill, bucket4j auth rate limiting, Sentry + UptimeRobot, git-history secret audit)
 - **v0.7 (Phase A)** — Refresh token system: 30-minute access tokens + DB-persisted refresh tokens (SHA-256 only, rotation with reuse detection, 30-day sliding expiry, `refresh_tokens` V12), `/api/auth/refresh` + `/api/auth/logout` (real server-side logout), web client silent refresh with single-flight retry on 401, daily purge of expired rows
+- **v0.8** — Photo notes, updated photos, room history: `photos.note` (≤500 chars, edited in the lightbox), `photos.replaces_photo_id` (UNIQUE, RESTRICT — a photo is never modified or deleted, "update" adds a new photo that records which one it replaces, only the current inspection's reference is swapped), `inspection_photos.carried_forward` (written on inheritance, back-filled for existing data) plus `confirmed_at/by` columns reserved for a real on-site confirmation action, Room page Current/History tabs with the History panel grouping *Updated this inspection / Newly captured / Carried forward (per origin inspection, collapsed by default)*, PDF captions marked `Carried forward` and notes rendered under photos (V13)
 
 ## Google Sign-in Setup
 

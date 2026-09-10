@@ -42,6 +42,22 @@ public class Photo {
     @Column(name = "uploaded_at")
     private LocalDateTime uploadedAt;
 
+    /**
+     * v0.8:照片文字说明(≤500 字),是照片本身的属性——修改会影响所有引用该照片的
+     * inspection 视图。这是设计意图:已生成的 PDF 是独立文件,不受影响。
+     * 空字符串一律存为 NULL。
+     */
+    @Column(name = "note", length = 500)
+    private String note;
+
+    /**
+     * v0.8:照片更新链。非空 = 本照片是对 replacesPhotoId 那张照片的更新。
+     * 数据库 UNIQUE:一张旧照片只能被一张新照片替换,链不分叉。
+     * 用 Long 而非 @ManyToOne:避免加载链时递归抓取和 N+1。
+     */
+    @Column(name = "replaces_photo_id")
+    private Long replacesPhotoId;
+
     @PrePersist
     protected void onCreate() {
         uploadedAt = LocalDateTime.now();

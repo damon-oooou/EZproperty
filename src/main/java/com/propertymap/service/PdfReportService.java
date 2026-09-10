@@ -3,11 +3,14 @@ package com.propertymap.service;
 import com.propertymap.controller.dto.ReportDetailsResponse;
 import com.propertymap.controller.dto.RoomConditionResponse;
 import com.propertymap.model.Inspection;
+import com.propertymap.model.InspectionPhoto;
 import com.propertymap.model.Photo;
 import com.propertymap.model.Property;
 import com.propertymap.model.Room;
+import com.propertymap.model.User;
 import com.propertymap.repository.InspectionPhotoRepository;
 import com.propertymap.repository.RoomRepository;
+import com.propertymap.repository.UserRepository;
 import com.propertymap.security.TenantGuard;
 import com.propertymap.storage.PhotoKeys;
 import com.propertymap.storage.PhotoStorage;
@@ -27,9 +30,12 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -42,6 +48,7 @@ public class PdfReportService {
 
     private final RoomRepository roomRepository;
     private final InspectionPhotoRepository inspectionPhotoRepository;
+    private final UserRepository userRepository;
     private final ReportService reportService;
     private final PhotoStorage photoStorage;
     private final TenantGuard tenantGuard;
@@ -65,7 +72,8 @@ public class PdfReportService {
 
     /** 模板视图模型(Spring 的 Thymeleaf 用 SpEL,record 访问器可直接用) */
     public record ConditionRow(String roomName, String condition, String comments) {}
-    public record PhotoView(String dataUri, String caption) {}
+    /** v0.8:note 可为 null(模板按 th:if 渲染)。 */
+    public record PhotoView(String dataUri, String caption, String note) {}
     public record RoomPhotos(String roomName, List<PhotoView> photos) {}
 
     @Transactional(readOnly = true)
@@ -136,35 +144,85 @@ public class PdfReportService {
         List<Room> rooms = roomRepository.findByPropertyIdOrderByPosition(propertyId);
 
         // 1. 收集全部 (room -> photos),并提交并行 load
-        Map<Long, List<Photo>> photosByRoom = new HashMap<>();
+        //    v0.8:取 join 行而非 Photo,题注需要 carried_forward / confirmed_*
+        Map<Long, List<InspectionPhoto>> linksByRoom = new HashMap<>();
         Map<Long, Future<byte[]>> loads = new HashMap<>();
         for (Room room : rooms) {
-            List<Photo> photos = inspectionPhotoRepository
-                    .findPhotosByInspectionIdAndRoomId(inspectionId, room.getId());
-            photosByRoom.put(room.getId(), photos);
-            for (Photo photo : photos) {
+            List<InspectionPhoto> links = inspectionPhotoRepository
+                    .findLinksByInspectionIdAndRoomId(inspectionId, room.getId());
+            linksByRoom.put(room.getId(), links);
+            for (InspectionPhoto link : links) {
+                Photo photo = link.getPhoto();
                 String mediumKey = PhotoKeys.medium(photo.getStorageKey());
                 loads.put(photo.getId(),
                         PHOTO_LOAD_POOL.submit(() -> photoStorage.load(mediumKey)));
             }
         }
 
+        // v0.8:现场确认人姓名一次取回(v0.8 不会写入 confirmed_by,模板仍需支持)
+        Map<Long, String> confirmerNames = confirmerNames(linksByRoom.values());
+
         // 2. 按房间顺序组装(join 各 Future)
         List<RoomPhotos> result = new ArrayList<>();
         for (Room room : rooms) {
             List<PhotoView> views = new ArrayList<>();
-            for (Photo photo : photosByRoom.get(room.getId())) {
+            for (InspectionPhoto link : linksByRoom.get(room.getId())) {
+                Photo photo = link.getPhoto();
                 String dataUri = toDataUri(photo, loads.get(photo.getId()));
                 if (dataUri == null) continue;
                 int n = views.size() + 1;
                 String label = n == 1 ? room.getName() : room.getName() + " " + n;
-                views.add(new PhotoView(dataUri, label + " \u2014 " + dateCaption(photo)));
+                String caption = label + " \u2014 " + dateCaption(photo)
+                        + provenanceCaption(link, confirmerNames);
+                views.add(new PhotoView(dataUri, caption, photo.getNote()));
             }
             if (!views.isEmpty()) {
                 result.add(new RoomPhotos(room.getName(), views));
             }
         }
         return result;
+    }
+
+    /**
+     * v0.8:沿用标注。carried_forward 时追加 " · Carried forward";
+     * 若还有现场确认(confirmed_at 非空)追加 " · confirmed on site {日期}, {确认人}"。
+     */
+    private String provenanceCaption(InspectionPhoto link, Map<Long, String> confirmerNames) {
+        if (!link.isCarriedForward()) return "";
+        StringBuilder sb = new StringBuilder(" · Carried forward");
+        if (link.getConfirmedAt() != null) {
+            sb.append(" · confirmed on site ")
+              .append(DATE_FMT.format(link.getConfirmedAt().toLocalDate()));
+            String name = link.getConfirmedBy() == null ? null : confirmerNames.get(link.getConfirmedBy());
+            if (name != null) sb.append(", ").append(name);
+        }
+        return sb.toString();
+    }
+
+    /** 确认人 user id → 短名("J. Okafor")。一次 findAllById,不逐行查。 */
+    private Map<Long, String> confirmerNames(Collection<List<InspectionPhoto>> linkGroups) {
+        Set<Long> ids = new HashSet<>();
+        for (List<InspectionPhoto> links : linkGroups) {
+            for (InspectionPhoto link : links) {
+                if (link.getConfirmedAt() != null && link.getConfirmedBy() != null) {
+                    ids.add(link.getConfirmedBy());
+                }
+            }
+        }
+        if (ids.isEmpty()) return Map.of();
+        Map<Long, String> names = new HashMap<>();
+        for (User user : userRepository.findAllById(ids)) {
+            names.put(user.getId(), shortName(user.getFullName()));
+        }
+        return names;
+    }
+
+    /** "Jane Okafor" → "J. Okafor";单个词原样返回。 */
+    static String shortName(String fullName) {
+        if (fullName == null) return null;
+        String[] parts = fullName.trim().split("\\s+");
+        if (parts.length < 2) return fullName.trim();
+        return parts[0].charAt(0) + ". " + parts[parts.length - 1];
     }
 
     /**
