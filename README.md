@@ -21,9 +21,19 @@ EZproperty maintains a long-lived **Property Photo Library**. Photos belong to t
 - Creating a new inspection can **inherit** the previous inspection's photos by copying join-table rows — not files, not records
 - The manager then re-photographs only the rooms that changed
 - Removing a photo from an inspection deletes only the reference; the file and its history remain intact for past inspections
+- **Photos are never modified or deleted.** Updating a spot (a repaired defect, a new scuff) adds a new photo that records which one it replaces; only the current inspection's reference is swapped, and the old photo stays in every inspection it ever appeared in
 - The same inheritance applies to report content: room conditions and tenancy details carry over, while per-visit findings (urgent actions, comments) start blank
 
-## Current Status — v0.6
+## Current Status — v0.8
+
+**Photo notes, updated photos, room history (v0.8)**
+- Every photo can carry a note (≤500 chars, edited in the lightbox). A note is a property of the photo, so it shows in every inspection that references it; already-generated PDFs are separate files and are not affected
+- "Add updated photo" on a selected photo uploads a replacement through the normal ingest pipeline, records `replaces_photo_id` (UNIQUE — a photo has at most one successor, so the chain never forks) and swaps only the current inspection's reference. A note describing what changed is required
+- Each inspection reference knows whether it was carried forward from the previous inspection or captured this time; the Room page has a **History** tab that groups photos into *Updated this inspection* (old → new with the note), *Newly captured*, and *Carried forward* (collapsed per origin inspection, e.g. "From entry, 19 Mar 2024 · 11 photos"). A photo's origin is the earliest inspection that referenced it, derived by query rather than stored
+- PDF captions add "Carried forward" for inherited photos and render notes under the photo. `confirmed_at / confirmed_by` columns exist for a future on-site confirmation action but are not written yet — a creation timestamp would be fake evidence
+
+**Auth (v0.7)**
+- 30-minute access tokens plus DB-persisted refresh tokens (SHA-256 only, rotation with reuse detection, 30-day sliding expiry); real server-side logout; web client refreshes silently with a single-flight retry on 401
 
 **Photo ingest pipeline**
 - Every upload passes through a single normalisation pipeline: EXIF is read from the raw bytes first (`DateTimeOriginal` → stored as `taken_at`, `Orientation` → used to rotate/flip pixels, all 8 values implemented), then pixels are re-encoded — the stored files contain **no EXIF at all** (GPS and orientation tags never reach disk)
@@ -166,8 +176,10 @@ users ─< refresh_tokens                                     (v0.7, SHA-256 onl
 
 ## Roadmap
 
-**Next (v0.7 direction)**
+**Next**
 - ~~Refresh tokens (prerequisite for the iOS app)~~ — done in v0.7 Phase A
+- ~~Photo notes, updated photos, room history~~ — done in v0.8
+- On-site confirmation of carried-forward photos (writes `confirmed_at / confirmed_by`, surfaces in PDF captions); property-level open-issues view (photos with a note and no successor)
 - iOS app v1: native camera + PHPicker batch import, camera pipeline fixed to JPEG (`AVCapturePhotoOutput`, quality prioritisation); server-side HEIC decoding deliberately not planned — HEIC uploads are rejected with a conversion hint
 - Report finalize/lock mechanism (high priority, planned separately)
 
